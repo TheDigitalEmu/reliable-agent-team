@@ -14,8 +14,9 @@ The design rule: push every roadblock to the strongest mechanism it can have. A 
 is only a PROCEDURE is a backlog item to convert into a CHECK or a BLOCK, not an acceptable resting
 state. That conversion is the entire value of this kit over the descriptive playbook.
 
-Roadblocks are grouped by the theme they belong to. Failure IDs (F1 etc) cross-reference
-`docs/agentic-team-playbook/07-common-failure-modes.md`.
+Roadblocks are grouped by the theme they belong to. Failure IDs (F1 etc) cross-reference the
+common-failure-modes catalogue in the origin project's playbook (not shipped in this repo; each
+failure is described in place here where it matters).
 
 ---
 

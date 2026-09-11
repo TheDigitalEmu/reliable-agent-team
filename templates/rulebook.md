@@ -1,7 +1,7 @@
 # Team rulebook
 
 The rules the whole team obeys, every session. Terse and imperative on purpose. The reasoning lives
-in `docs/agentic-team-playbook/`; this file is the law, not the argument. Copy it into a new project
+in `why/reasoning.md`; this file is the law, not the argument. Copy it into a new project
 as-is. It carries no project specifics: the stack, correctness bar, model assignment, and any
 project-only hooks come from the active profile under `profiles/` (see `profiles/example.md`).
 

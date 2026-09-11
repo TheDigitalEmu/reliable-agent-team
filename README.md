@@ -1,15 +1,21 @@
 # Reliable Agent Team
 
-A buildable kit for standing up an agent team whose reliability comes from ENFORCEMENT, not from
-agents remembering to behave. This is the answer to a specific failure: the playbook in
-`docs/agentic-team-playbook/` correctly describes how to run a team, but a described rule is a rule
-an agent can forget, and every failure on the project that produced it was a known rule skipped. So
-this kit does the opposite of describe. Every rule here ships as machinery that fails LOUD when it is
-broken: a hook that blocks the commit, a script that blocks the merge, a check that greps git and the
-live URL before it will print "done."
+> **If you were told to "install this": read `INSTALL.md` and follow it in order.**
+> That file is the authoritative, step-by-step procedure. Do the steps in order,
+> do not start real work until `scripts/self-test` exits 0, and never weaken a
+> guard to make a step pass. Everything else in this README is context.
 
-This is NOT a registered skill yet (by owner instruction). It is the source and the installable
-parts a skill would lay down. See `ROADBLOCK-REGISTER.md` for the design spine.
+A buildable kit for standing up an agent team whose reliability comes from ENFORCEMENT, not from
+agents remembering to behave. This is the answer to a specific failure: a described rule is a rule
+an agent can forget, and every failure on the project that produced this kit was a known rule
+skipped. So this kit does the opposite of describe. Every rule here ships as machinery that fails
+LOUD when it is broken: a hook that blocks the commit, a script that blocks the merge, a check that
+greps git and the live URL before it will print "done." Read `WHY-KAREN.md` for the account of the
+failure this kit answers.
+
+This kit ships as a Claude Code plugin with an `install-team` skill (see `.claude-plugin/` and
+`skills/`), but it needs none of that to adopt: point an agent at this repo, say "install this", and
+have it follow `INSTALL.md`. See `ROADBLOCK-REGISTER.md` for the design spine.
 
 ## The design principle
 Reliability is a failure RATE you drive down with enforcement plus real usage, not a state a document

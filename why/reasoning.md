@@ -1,12 +1,14 @@
 # Why the mechanisms are shaped this way
 
-The full reasoning lives in `docs/agentic-team-playbook/`. This kit is the ENFORCEMENT layer that
-installs what the playbook argues for. The playbook makes the case; the machinery makes the case
-unforgettable. Humans read this file; the hooks and scripts do not need it.
+The full argument was made in the origin project's team playbook (not shipped in this repo). This
+kit is the ENFORCEMENT layer that installs what that playbook argued for: the playbook made the case,
+the machinery makes the case unforgettable. This file carries the one-paragraph WHY per theme so the
+reasoning travels with the kit. Humans read this file; the hooks and scripts do not need it.
 
 Every roadblock and its mechanism is in `../ROADBLOCK-REGISTER.md`. Below is the one-paragraph WHY per
-theme, each pointing at the chapter that argues it in full. Read the chapter for the evidence; read
-this for the shape.
+theme. The `-> playbook chNN` tags are provenance: they name the chapter of the origin project's
+playbook that argued each point in full. That playbook is not shipped here, so treat the paragraph
+below as the self-contained reason; the tag is only a breadcrumb to where the long-form case was made.
 
 ## Verification (the dominant theme) -> playbook ch05, ch02
 Why "done" is a script's exit code and not an agent's judgment: an agent reports with a confidence
