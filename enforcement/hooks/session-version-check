@@ -56,9 +56,19 @@ TIMEOUT="${TEAM_VERSION_TIMEOUT:-2}"
 hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 LOCAL_FILE="${TEAM_LOCAL_VERSION:-$hook_dir/../../VERSION}"
 
+# Read the version token from a VERSION source: the FIRST non-blank, non-comment
+# line, with surrounding whitespace stripped. This tolerates a trailing comment
+# line in the file (e.g. a bump note) without the token being corrupted, and it
+# means a stray extra line can never poison the comparison.
+read_version_token() {
+	# stdin -> first non-blank non-# line, trimmed of all whitespace
+	awk 'NF { line=$0; sub(/^[ \t\r]+/,"",line); if (substr(line,1,1) != "#") { print line; exit } }' 2>/dev/null \
+		| tr -d ' \t\r\n' 2>/dev/null || true
+}
+
 # --- local version: if we cannot read it, there is nothing to compare. Fail open.
 [ -f "$LOCAL_FILE" ] || exit 0
-LOCAL="$(tr -d ' \t\r\n' < "$LOCAL_FILE" 2>/dev/null || true)"
+LOCAL="$(read_version_token < "$LOCAL_FILE")"
 [ -n "$LOCAL" ] || exit 0
 
 # --- fetch the remote version, bounded and safe -----------------------------
@@ -87,7 +97,7 @@ fetch_remote() {
 }
 
 REMOTE_RAW="$(fetch_remote || true)"
-REMOTE="$(printf '%s' "${REMOTE_RAW:-}" | tr -d ' \t\r\n' 2>/dev/null || true)"
+REMOTE="$(printf '%s\n' "${REMOTE_RAW:-}" | read_version_token)"
 
 # No remote (offline, timeout, error, no tool): silent, proceed. FAIL OPEN.
 [ -n "$REMOTE" ] || exit 0
