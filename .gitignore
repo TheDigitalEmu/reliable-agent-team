@@ -1,0 +1,11 @@
+# Claude Code local session config (not part of the kit payload)
+.claude/
+
+# In-repo worktrees (per-session, never committed)
+.worktrees/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*~

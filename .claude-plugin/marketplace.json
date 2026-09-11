@@ -1,0 +1,15 @@
+{
+  "name": "reliable-agent-team",
+  "owner": {
+    "name": "TheDigitalEmu",
+    "url": "https://github.com/TheDigitalEmu"
+  },
+  "plugins": [
+    {
+      "name": "reliable-agent-team",
+      "source": "./",
+      "description": "Enforcement kit for running an agent team reliably: worktree isolation, claim ledger, SHA-bound gates, a done-check, and a read-and-warn per-session version check.",
+      "version": "0.1.0"
+    }
+  ]
+}

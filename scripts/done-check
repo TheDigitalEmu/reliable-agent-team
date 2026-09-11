@@ -1,0 +1,347 @@
+#!/bin/sh
+# done-check : "done" is an exit code proven against evidence, not an agent's judgment.
+#
+# ROADBLOCK REMOVED (see ../ROADBLOCK-REGISTER.md, "Verification roadblocks"):
+#   - "'Done' declared from memory, not evidence" (F1, F2): this script greps git, the gate
+#     ledger, and the live artifact. If it cannot prove done, it prints the exact missing
+#     piece and exits non-zero.
+#   - "Work stays local and never pushed" (F2, F8): done FAILs while
+#     `git log origin/BRANCH..HEAD` is non-empty. Unpushed cannot read as done.
+#   - "First-pass output accepted without a captured artifact" (F1): a task flagged as
+#     having a live artifact must supply a URL that returns 200 OR an existing artifact
+#     path. No artifact, no done.
+#   - "Two arbiters of done that can disagree" (seam 1, agentic-discussion/0001-0003):
+#     a project's OWN gates (its validators, its compliance check) become part of the
+#     definition of done via a .team/done-extra file or DONE_EXTRA_CHECKS env, so the
+#     repo's gate is inside done-check, not running parallel to it.
+#
+# This is a CHECK. It composes four evidence gates:
+#   (1) GIT     : the branch is pushed and HEAD is not ahead of origin/BRANCH.
+#   (2) GATES   : if the change class requires gates, gate-check passes for this HEAD.
+#   (3) ARTIFACT: if the task has a live artifact, a URL returns 200 OR a path exists.
+#   (4) EXTRA   : project-supplied extra checks (a repo's own validators) all exit 0.
+#
+# ---------------------------------------------------------------------------
+# PROJECT-GATE EXTENSION POINT (seam 1, agentic-discussion/0001-0003)
+#
+#   done-check is project-agnostic: the site it was built for had no extra
+#   validators, so out of the box (4) is a no-op and behaviour is exactly the
+#   three-gate check above. A project that runs its OWN gates (for example a
+#   doc/test/discussion validator, or a compliance validator) makes them part
+#   of the definition of DONE, rather than a second arbiter that can disagree,
+#   by supplying extra commands two ways:
+#
+#     .team/done-extra   one shell command per line. Blank lines and lines whose
+#                        first non-blank character is '#' are ignored. Each
+#                        remaining line is run via `sh -c` from the repo; every
+#                        one must exit 0. Override the path with --done-extra.
+#     DONE_EXTRA_CHECKS  an env var carrying extra commands, one per newline
+#                        (same ignore rules). Lets CI inject checks without a
+#                        file in the tree.
+#
+#   COMPOSITION when both are present: the FILE commands run first, then the ENV
+#   commands, and ALL of them must exit 0. They are additive, not either/or, so
+#   a CI-injected check via the env cannot silently replace (and weaken) the
+#   file's checks, and vice versa. Order is file-then-env only so failures read
+#   in a predictable sequence; it carries no other meaning since every command
+#   must pass regardless.
+#
+#   An ABSENT or EMPTY done-extra file AND an unset/empty DONE_EXTRA_CHECKS is a
+#   strict no-op: (4) prints an OK "none configured" line and changes nothing.
+#   This is the backward-compatibility guarantee (today's behaviour for a
+#   project with no validators). Any extra command that exits non-zero prints a
+#   BLOCK line naming the exact command and done-check exits non-zero (NOT DONE).
+#
+# ---------------------------------------------------------------------------
+# TASK RECORD FORMAT (the contract the templates lane must match)
+#
+#   Facts about a task are read from a plain, greppable board. Default: .team/TASKS.md
+#   (override with --tasks PATH). Any line describing the task id carries pipe-delimited
+#   key=value fields; done-check greps for the task id then reads the fields it needs.
+#   Lines starting '#' and blank lines are ignored.
+#
+#   One task is ONE line, fields pipe-delimited, order-free key=value after the id:
+#
+#     <task-id> | class=<change-class> | author=<work-author> [ | artifact=yes|no ] \
+#               [ | url=<https url> ] [ | path=<artifact path> ] [ | sha=<commit> ]
+#
+#   Keys:
+#     class     auth-data-input | static | presentational  (drives the gate requirement)
+#     author    the work author (passed to gate-check for the self-sign-off check)
+#     artifact  yes if this task ships a live/visual artifact that must be re-fetched
+#     url       a URL that must return HTTP 200 (satisfies artifact)
+#     path      a file that must exist, e.g. a screenshot (satisfies artifact)
+#     sha       the commit the gates are bound to (defaults to current HEAD)
+#
+#   Example board line (illustrative placeholder):
+#     T42-example-page | class=static | author=alice | artifact=yes | url=https://example.test/page
+#
+#   Command-line flags override anything read from the board, so the check runs without a
+#   board too (pass --class, --author, --url or --path directly).
+#
+# ---------------------------------------------------------------------------
+# USAGE
+#   done-check --task <task-id> [--branch <branch>] [--tasks <path>] [--ledger <path>]
+#              [--class <change-class>] [--author <work-author>]
+#              [--url <http-url>] [--path <artifact-path>] [--sha <commit>]
+#              [--done-extra <path>] [--no-gate] [--no-artifact] [--no-extra]
+#   done-check -h | --help
+#
+#   --branch     defaults to the current branch (git rev-parse --abbrev-ref HEAD).
+#   --done-extra path to the extra-checks file (defaults to .team/done-extra).
+#   --no-gate    skip the gate composition (use only when class truly needs no gates).
+#   --no-artifact  skip the artifact requirement (use only for non-artifact tasks).
+#   --no-extra   skip the project-supplied extra checks (file + env). Use only to
+#                diagnose; a real done should let a configured project gate run.
+#
+# EXIT CODES
+#   0  DONE: pushed, gated (if required), artifact verified (if required), extra checks pass.
+#   1  NOT DONE: prints exactly which piece is missing and the roadblock it maps to.
+#   2  usage / environment error.
+#
+# HOW TO TEST
+#   FAIL (unpushed): make a local commit not on origin, then
+#       ./done-check --task X --class static --author me --no-artifact
+#     -> exit 1, "GIT: branch is AHEAD of origin".
+#   PASS: on a branch equal to its origin, with the gate row present and an artifact:
+#       ./done-check --task X --class static --author alice \
+#           --url https://example.test/ --ledger /tmp/G.md
+#     -> exit 0 when origin is in sync, gate-check passes, and the URL returns 200.
+
+set -eu
+
+PROG="$(basename "$0")"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+usage() { sed -n '2,109p' "$0" | sed 's/^# \{0,1\}//'; }
+die()  { code="$1"; shift; printf '%s: %s\n' "$PROG" "$*" >&2; exit "$code"; }
+
+TASK=""
+BRANCH=""
+TASKS=""
+LEDGER=""
+CLASS=""
+AUTHOR=""
+URL=""
+ART_PATH=""
+SHA=""
+DONE_EXTRA=""
+DO_GATE=1
+DO_ART=1
+DO_EXTRA=1
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help)     usage; exit 0 ;;
+    --task)        TASK="${2:-}"; shift 2 ;;
+    --branch)      BRANCH="${2:-}"; shift 2 ;;
+    --tasks)       TASKS="${2:-}"; shift 2 ;;
+    --ledger)      LEDGER="${2:-}"; shift 2 ;;
+    --class)       CLASS="${2:-}"; shift 2 ;;
+    --author)      AUTHOR="${2:-}"; shift 2 ;;
+    --url)         URL="${2:-}"; shift 2 ;;
+    --path)        ART_PATH="${2:-}"; shift 2 ;;
+    --sha)         SHA="${2:-}"; shift 2 ;;
+    --done-extra)  DONE_EXTRA="${2:-}"; shift 2 ;;
+    --no-gate)     DO_GATE=0; shift ;;
+    --no-artifact) DO_ART=0; shift ;;
+    --no-extra)    DO_EXTRA=0; shift ;;
+    *) die 2 "unknown argument: $1 (try --help)" ;;
+  esac
+done
+
+[ -n "$TASK" ] || die 2 "missing --task <task-id>"
+
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die 2 "not inside a git repository"
+
+# ---- read fields from the board for anything not given on the command line ----
+field_from_board() {  # field_from_board <key>
+  key="$1"
+  [ -n "$TASKS" ] && [ -f "$TASKS" ] || return 0
+  # Find the first non-comment line mentioning the task id, pull key=value.
+  grep -v '^[[:space:]]*#' "$TASKS" 2>/dev/null \
+    | grep -F "$TASK" 2>/dev/null \
+    | head -n1 \
+    | tr '|' '\n' \
+    | sed 's/^[ \t]*//; s/[ \t]*$//' \
+    | grep -E "^${key}=" \
+    | head -n1 \
+    | sed "s/^${key}=//"
+}
+
+if [ -z "$TASKS" ] && [ -f ".team/TASKS.md" ]; then TASKS=".team/TASKS.md"; fi
+
+[ -n "$CLASS" ]    || CLASS="$(field_from_board class || true)"
+[ -n "$AUTHOR" ]   || AUTHOR="$(field_from_board author || true)"
+[ -n "$URL" ]      || URL="$(field_from_board url || true)"
+[ -n "$ART_PATH" ] || ART_PATH="$(field_from_board path || true)"
+[ -n "$SHA" ]      || SHA="$(field_from_board sha || true)"
+ART_FLAG="$(field_from_board artifact || true)"
+
+# Branch defaults to current.
+[ -n "$BRANCH" ] || BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+[ -n "$SHA" ] || SHA="$(git rev-parse HEAD 2>/dev/null)"
+
+FAILED=0
+printf 'done-check: task=%s branch=%s sha=%s\n' "$TASK" "$BRANCH" "$SHA"
+
+# ------------------------------------------------------------------ (1) GIT
+# The branch must exist on origin, and HEAD must not be ahead of it.
+if ! git rev-parse --verify --quiet "origin/$BRANCH" >/dev/null 2>&1; then
+  printf '  BLOCK GIT: origin/%s does not exist (branch not pushed)\n' "$BRANCH"
+  printf '        roadblock: work stays local and never pushed (F2/F8)\n'
+  FAILED=1
+else
+  AHEAD="$(git log --oneline "origin/$BRANCH..HEAD" 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "$AHEAD" != "0" ]; then
+    printf '  BLOCK GIT: HEAD is AHEAD of origin/%s by %s commit(s) (unpushed)\n' "$BRANCH" "$AHEAD"
+    printf '        roadblock: unpushed reads as done (F2/F8). Push before claiming done.\n'
+    FAILED=1
+  else
+    printf '  OK    GIT: pushed, HEAD not ahead of origin/%s\n' "$BRANCH"
+  fi
+fi
+
+# ------------------------------------------------------------------ (2) GATES
+if [ "$DO_GATE" -eq 1 ]; then
+  if [ -z "$CLASS" ]; then
+    printf '  BLOCK GATES: no change class known (pass --class or add class= to the board)\n'
+    printf '        roadblock: wrong-class-gates cannot be enforced without a class (F2)\n'
+    FAILED=1
+  elif [ "$CLASS" = "presentational" ] || [ "$CLASS" = "static" ] || [ "$CLASS" = "auth-data-input" ]; then
+    GC="$SCRIPT_DIR/gate-check"
+    [ -x "$GC" ] || GC="sh $SCRIPT_DIR/gate-check"
+    set +e
+    GATE_ARGS="--sha $SHA --class $CLASS"
+    [ -n "$AUTHOR" ] && GATE_ARGS="$GATE_ARGS --author $AUTHOR"
+    [ -n "$LEDGER" ] && GATE_ARGS="$GATE_ARGS --ledger $LEDGER"
+    # shellcheck disable=SC2086
+    GC_OUT="$($GC $GATE_ARGS 2>&1)"
+    GC_RC=$?
+    set -e
+    if [ "$GC_RC" -eq 0 ]; then
+      printf '  OK    GATES: gate-check passed for class=%s\n' "$CLASS"
+    else
+      printf '  BLOCK GATES: gate-check FAILED for class=%s\n' "$CLASS"
+      printf '%s\n' "$GC_OUT" | sed 's/^/        | /'
+      printf '        roadblock: merge/done before gates pass (F2)\n'
+      FAILED=1
+    fi
+  else
+    printf '  BLOCK GATES: unknown class "%s"\n' "$CLASS"
+    FAILED=1
+  fi
+else
+  printf '  SKIP  GATES: --no-gate set\n'
+fi
+
+# ------------------------------------------------------------------ (3) ARTIFACT
+# Required when --url or --path is given, or the board flags artifact=yes.
+ART_REQUIRED=0
+if [ "$DO_ART" -eq 1 ]; then
+  case "$ART_FLAG" in yes|YES|true|1) ART_REQUIRED=1 ;; esac
+  [ -n "$URL" ] && ART_REQUIRED=1
+  [ -n "$ART_PATH" ] && ART_REQUIRED=1
+fi
+
+if [ "$ART_REQUIRED" -eq 1 ]; then
+  ART_OK=0
+  # Path check first (cheap, offline).
+  if [ -n "$ART_PATH" ]; then
+    if [ -e "$ART_PATH" ]; then
+      printf '  OK    ARTIFACT: file exists: %s\n' "$ART_PATH"
+      ART_OK=1
+    else
+      printf '  ..    ARTIFACT: path given but missing: %s\n' "$ART_PATH"
+    fi
+  fi
+  # URL check (HTTP 200) if not already satisfied and a URL is present.
+  if [ "$ART_OK" -eq 0 ] && [ -n "$URL" ]; then
+    if command -v curl >/dev/null 2>&1; then
+      CODE="$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 15 "$URL" 2>/dev/null || echo 000)"
+      if [ "$CODE" = "200" ]; then
+        printf '  OK    ARTIFACT: %s returned HTTP 200\n' "$URL"
+        ART_OK=1
+      else
+        printf '  ..    ARTIFACT: %s returned HTTP %s (need 200)\n' "$URL" "$CODE"
+      fi
+    else
+      printf '  ..    ARTIFACT: curl not available to verify %s\n' "$URL"
+    fi
+  fi
+  if [ "$ART_OK" -eq 0 ]; then
+    printf '  BLOCK ARTIFACT: no verified artifact (need a URL returning 200 OR an existing path)\n'
+    printf '        roadblock: first-pass output accepted without an artifact (F1). No artifact, no done.\n'
+    FAILED=1
+  fi
+elif [ "$DO_ART" -eq 0 ]; then
+  printf '  SKIP  ARTIFACT: --no-artifact set\n'
+else
+  printf '  OK    ARTIFACT: task not flagged as having a live artifact\n'
+fi
+
+# ------------------------------------------------------------------ (4) EXTRA
+# Project-supplied extra checks: the repo's OWN gates become part of DONE (seam 1).
+# Commands come from two additive sources, run file-first then env; ALL must exit 0.
+# Ignore rules for both: blank lines and lines whose first non-blank char is '#'.
+# Absent/empty file AND unset/empty env is a strict no-op (backward compatibility).
+if [ "$DO_EXTRA" -eq 1 ]; then
+  [ -n "$DONE_EXTRA" ] || DONE_EXTRA=".team/done-extra"
+
+  # Collect the raw command text: file first (if present), then env (if set).
+  EXTRA_RAW=""
+  if [ -f "$DONE_EXTRA" ]; then
+    EXTRA_RAW="$(cat "$DONE_EXTRA")"
+  fi
+  if [ -n "${DONE_EXTRA_CHECKS:-}" ]; then
+    if [ -n "$EXTRA_RAW" ]; then
+      EXTRA_RAW="$EXTRA_RAW
+$DONE_EXTRA_CHECKS"
+    else
+      EXTRA_RAW="$DONE_EXTRA_CHECKS"
+    fi
+  fi
+
+  # Filter to runnable lines (drop blank + comment) into a temp file, so the run
+  # loop below executes in THIS shell (a pipe would lose EXTRA_FAILED in a subshell).
+  EXTRA_LIST="$(mktemp 2>/dev/null)" || die 2 "cannot create a temp file for extra checks"
+  printf '%s\n' "$EXTRA_RAW" | while IFS= read -r cl; do
+    trimmed="$(printf '%s' "$cl" | sed 's/^[[:space:]]*//')"
+    case "$trimmed" in ''|\#*) continue ;; esac
+    printf '%s\n' "$cl"
+  done > "$EXTRA_LIST"
+
+  if [ ! -s "$EXTRA_LIST" ]; then
+    printf '  OK    EXTRA: no extra checks configured (no-op)\n'
+  else
+    # Run each runnable command via sh -c; require exit 0 from every one.
+    EXTRA_FAILED=0
+    while IFS= read -r cmd; do
+      set +e
+      OUT="$(sh -c "$cmd" 2>&1)"
+      RC=$?
+      set -e
+      if [ "$RC" -eq 0 ]; then
+        printf '  OK    EXTRA: %s\n' "$cmd"
+      else
+        printf '  BLOCK EXTRA: extra check FAILED (exit %s): %s\n' "$RC" "$cmd"
+        [ -n "$OUT" ] && printf '%s\n' "$OUT" | sed 's/^/        | /'
+        printf '        roadblock: two arbiters of done that can disagree (seam 1). The\n'
+        printf '        project gate is part of done; a red project check is NOT done.\n'
+        EXTRA_FAILED=1
+      fi
+    done < "$EXTRA_LIST"
+    [ "$EXTRA_FAILED" -eq 0 ] || FAILED=1
+  fi
+  rm -f "$EXTRA_LIST"
+else
+  printf '  SKIP  EXTRA: --no-extra set\n'
+fi
+
+# ------------------------------------------------------------------ verdict
+if [ "$FAILED" -ne 0 ]; then
+  printf 'done-check: NOT DONE (see BLOCK lines above)\n' >&2
+  exit 1
+fi
+printf 'done-check: DONE (pushed + gated + artifact verified + extra checks pass)\n'
+exit 0

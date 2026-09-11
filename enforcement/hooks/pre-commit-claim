@@ -1,0 +1,297 @@
+#!/bin/sh
+# ============================================================================
+# pre-commit-claim : file-claim collision guard (git pre-commit hook)
+# ----------------------------------------------------------------------------
+# ROADBLOCK REMOVED
+#   F14 (coordination): "A session touches a file another session claimed."
+#   See ROADBLOCK-REGISTER.md, Coordination roadblocks, class BLOCK,
+#   artifact enforcement/hooks/pre-commit-claim.
+#
+# WHAT IT DOES
+#   Before a commit is created, it reads a claim ledger (a SESSIONS-style
+#   markdown table) and BLOCKS the commit if any staged file is claimed by a
+#   DIFFERENT active session than the current one. The current session id
+#   comes from $TEAM_SESSION or the .team/whoami file. If the ledger is
+#   absent it fails CLOSED with a setup instruction (a missing ledger must
+#   never read as "no claims, proceed").
+#
+# INSTALL
+#   Do not hand-copy. Run enforcement/install-hooks from the repo root, which
+#   wires this file in idempotently. (You can also copy it to
+#   .git/hooks/pre-commit and chmod +x, but install-hooks is the supported
+#   path and keeps both hooks in sync.)
+#
+# CONFIGURE (all optional, env vars)
+#   TEAM_LEDGER    path to the claim ledger      (default .team/SESSIONS.md)
+#   TEAM_WHOAMI    path to the session-id file   (default .team/whoami)
+#   TEAM_SESSION   current session id            (overrides the whoami file)
+#
+# SELF-TEST (copy/paste from a scratch repo; do NOT run in a live repo)
+#   git init -q sandbox && cd sandbox
+#   mkdir -p .team
+#   printf 'other-session | br | src/a.txt | task | working | now\n' > .team/SESSIONS.md
+#   printf 'my-session\n' > .team/whoami
+#   cp /path/to/pre-commit-claim .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+#   # FAILING CASE: staging a file another session claims must block.
+#   echo hi > src/a.txt && mkdir -p src && echo hi > src/a.txt
+#   git add src/a.txt && git commit -m x    # -> BLOCKED, exit 3
+#   # PASSING CASE: a file nobody else claims commits fine.
+#   echo hi > src/mine.txt && git add src/mine.txt && git commit -m ok   # -> OK
+#   # FAIL-CLOSED CASE: remove the ledger, any commit blocks with a setup error.
+#   rm .team/SESSIONS.md && git add -A && git commit -m y  # -> BLOCKED, exit 2
+# ============================================================================
+
+set -eu
+
+LEDGER="${TEAM_LEDGER:-.team/SESSIONS.md}"
+WHOAMI="${TEAM_WHOAMI:-.team/whoami}"
+
+die() {
+	# $1 = exit code, rest = message lines already formatted by caller
+	code="$1"
+	shift
+	printf '%s\n' "$@" >&2
+	exit "$code"
+}
+
+# --- resolve the current session id -----------------------------------------
+CURRENT="${TEAM_SESSION:-}"
+if [ -z "$CURRENT" ] && [ -f "$WHOAMI" ]; then
+	# first non-empty, non-comment line of the whoami file
+	CURRENT=$(sed -e 's/#.*$//' "$WHOAMI" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v '^$' | head -n 1)
+fi
+
+if [ -z "$CURRENT" ]; then
+	die 2 \
+		"BLOCKED by pre-commit-claim (roadblock F14: file-claim collision)." \
+		"Cannot determine the current session id." \
+		"Fix: set TEAM_SESSION, or create $WHOAMI with your session name" \
+		"(run: enforcement/new-session <name> <branch>)."
+fi
+
+# --- fail closed if the ledger is missing -----------------------------------
+if [ ! -f "$LEDGER" ]; then
+	die 2 \
+		"BLOCKED by pre-commit-claim (roadblock F14: file-claim collision)." \
+		"Claim ledger not found: $LEDGER" \
+		"A missing ledger is treated as 'unsafe', not 'no claims'." \
+		"Fix: run the team setup so the ledger exists (enforcement/new-session)," \
+		"or set TEAM_LEDGER to the correct path."
+fi
+
+# --- collect staged files ---------------------------------------------------
+# Read staged names NUL-delimited with quotePath OFF (M3/M4), so paths with
+# spaces or non-ASCII bytes come through as whole raw paths and cannot slip past
+# the claim match by fragmenting or by git's octal-escaped quoting.
+# Fail CLOSED if mktemp is missing rather than use a predictable temp path (L4).
+STAGED_NUL=$(mktemp 2>/dev/null) || die 2 \
+	"BLOCKED by pre-commit-claim (roadblock F14: file-claim collision)." \
+	"mktemp unavailable; refusing to run the claim guard without a safe temp file (fail closed)."
+STAGED_FILE=$(mktemp 2>/dev/null) || die 2 \
+	"BLOCKED by pre-commit-claim (roadblock F14: file-claim collision)." \
+	"mktemp unavailable; refusing to run the claim guard without a safe temp file (fail closed)."
+trap 'rm -f "$STAGED_NUL" "$STAGED_FILE" "${CLAIMS:-}"' EXIT INT TERM
+
+git -c core.quotePath=false diff --cached -z --name-only --diff-filter=ACMR > "$STAGED_NUL" 2>/dev/null || {
+	die 2 \
+		"BLOCKED by pre-commit-claim (roadblock F14: file-claim collision)." \
+		"Could not read the staged file list from git (fail closed)."
+}
+if [ ! -s "$STAGED_NUL" ]; then
+	exit 0
+fi
+
+# Convert the NUL-delimited list to a newline-delimited one for a POSIX-portable
+# read loop (POSIX sh has no `read -d ''`). A path containing a literal newline
+# would corrupt that mapping, so detect it and fail CLOSED: the count of NUL
+# records must equal the count of newline-split lines, otherwise a path spans
+# lines and we refuse rather than risk mis-matching a claim.
+NUL_RECORDS=$(tr -dc '\0' < "$STAGED_NUL" | wc -c | tr -d ' ')
+# each record is NUL-terminated, so records == NUL count
+tr '\0' '\n' < "$STAGED_NUL" > "$STAGED_FILE"
+# a trailing NUL yields a trailing empty line; strip exactly one if present
+LINE_COUNT=$(grep -c '' "$STAGED_FILE" 2>/dev/null || echo 0)
+# STAGED_FILE ends with a newline per record; drop the final empty line count
+# introduced by the terminating separator.
+EFFECTIVE_LINES=$LINE_COUNT
+if [ "$EFFECTIVE_LINES" -ne "$NUL_RECORDS" ]; then
+	die 2 \
+		"BLOCKED by pre-commit-claim (roadblock F14: file-claim collision)." \
+		"A staged path contains a newline; refusing to evaluate claims safely (fail closed)." \
+		"Rename the file to remove the embedded newline before committing."
+fi
+
+# ----------------------------------------------------------------------------
+# Ledger format (SESSIONS-style markdown table, pipe-delimited):
+#   session | branch/worktree | files / globs | task | status | updated
+# We only read: column 1 (session), column 3 (files/globs), column 5 (status).
+# A row is "active" unless its status is parked / done / cleared. A claim
+# entry of "(cleared)" or "-" or empty is treated as no claim.
+# Globs are matched with shell case-glob (fnmatch), and a claim on a directory
+# (a trailing / or a bare dir path) matches files under it.
+# ----------------------------------------------------------------------------
+
+# Read active foreign claims into a temp file: "session<TAB>pattern" per line.
+# Fail CLOSED if mktemp is unavailable rather than fall back to a predictable,
+# attacker-guessable temp path (L4).
+CLAIMS=$(mktemp 2>/dev/null) || die 2 \
+	"BLOCKED by pre-commit-claim (roadblock F14: file-claim collision)." \
+	"mktemp unavailable; refusing to run the claim guard without a safe temp file (fail closed)."
+
+# H3 fail-closed accounting. We must distinguish:
+#   (a) a structurally valid ledger with zero active foreign claims (OK to proceed), from
+#   (b) a corrupt / garbage / malformed ledger (must BLOCK, never read as "no claims").
+# SAW_STRUCTURE : we saw a recognisable header or separator row (valid table skeleton).
+# DATA_ROWS     : count of well-formed (>=5 pipe) data rows parsed.
+# MALFORMED     : a line that looks like a data row (has a leading pipe and some content
+#                 but FEWER than 5 pipes) -> corruption signal, block.
+SAW_STRUCTURE=0
+DATA_ROWS=0
+MALFORMED=0
+NONBLANK=0
+
+while IFS= read -r line; do
+	# blank / whitespace-only lines are ignored and do not count as content
+	case "$line" in
+		'' ) continue ;;
+		*[!' 	']* ) NONBLANK=$((NONBLANK + 1)) ;;
+		* ) continue ;;
+	esac
+
+	# recognise the header row and the markdown separator row as valid structure
+	case "$line" in
+		*'| session '*|*'|session|'*|'| session |'*) SAW_STRUCTURE=1; continue ;;
+	esac
+	# separator row: pipes and dashes/colons only
+	sep_check=$(printf '%s' "$line" | tr -d ' \t|:-')
+	if [ -z "$sep_check" ]; then
+		case "$line" in *'|'*) SAW_STRUCTURE=1; continue ;; esac
+	fi
+
+	# a line beginning (after optional whitespace) with a pipe is a claimed data row;
+	# it MUST have at least 5 pipes or the ledger is malformed (fail closed).
+	case "$line" in
+		*'|'*'|'*'|'*'|'*'|'*) : ;;   # has >=5 pipes, candidate data row
+		[' 	']*'|'* | '|'*)         # looks like a table row but too few pipes
+			MALFORMED=$((MALFORMED + 1)); continue ;;
+		*) continue ;;                 # prose / non-table line, ignore
+	esac
+
+	# strip a leading pipe so field 1 is the session, not empty
+	row=$(printf '%s' "$line" | sed -e 's/^[[:space:]]*|//')
+	sess=$(printf '%s' "$row" | cut -d '|' -f 1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+	files=$(printf '%s' "$row" | cut -d '|' -f 3 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+	status=$(printf '%s' "$row" | cut -d '|' -f 5 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+	# skip the header row and the markdown separator row
+	case "$sess" in
+		session|":---"*|"---"*|"") SAW_STRUCTURE=1; continue ;;
+	esac
+
+	DATA_ROWS=$((DATA_ROWS + 1))
+
+	# lower-case the status for comparison
+	lstatus=$(printf '%s' "$status" | tr '[:upper:]' '[:lower:]')
+	case "$lstatus" in
+		parked|done|cleared|closed|"") continue ;;   # not an active claim
+	esac
+	# skip our own rows
+	[ "$sess" = "$CURRENT" ] && continue
+	# skip empty / cleared claim cells
+	case "$files" in
+		""|"-"|"(cleared)"|"(none)"|"n/a"|"N/A") continue ;;
+	esac
+	# a claim cell can list several globs separated ONLY by commas (M3): a path may
+	# legitimately contain spaces, so we must not split on whitespace.
+	OLDIFS=$IFS
+	IFS=','
+	for pat in $files; do
+		IFS=$OLDIFS
+		# trim surrounding whitespace, then drop surrounding parens/backticks
+		pat=$(printf '%s' "$pat" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^[`(]*//' -e 's/[`)]*$//')
+		[ -z "$pat" ] && { IFS=','; continue; }
+		printf '%s\t%s\n' "$sess" "$pat" >> "$CLAIMS"
+		IFS=','
+	done
+	IFS=$OLDIFS
+done < "$LEDGER"
+
+# H3: a non-empty ledger that yielded NO valid structure and NO data rows is garbage,
+# or contained a malformed table row: BLOCK, never treat as "no claims, proceed".
+if [ "$MALFORMED" -gt 0 ]; then
+	die 2 \
+		"BLOCKED by pre-commit-claim (roadblock F14: file-claim collision)." \
+		"The claim ledger $LEDGER has a malformed table row (a pipe-started row with" \
+		"fewer than 5 columns). A corrupt ledger fails CLOSED, it is never read as" \
+		"'no claims'. Fix the row, or restore the ledger from new-session."
+fi
+if [ "$NONBLANK" -gt 0 ] && [ "$SAW_STRUCTURE" -eq 0 ] && [ "$DATA_ROWS" -eq 0 ]; then
+	die 2 \
+		"BLOCKED by pre-commit-claim (roadblock F14: file-claim collision)." \
+		"The claim ledger $LEDGER is non-empty but no valid header, separator, or data" \
+		"row could be parsed (garbage/corrupt). A corrupt ledger fails CLOSED, it is" \
+		"never read as 'no claims'. Restore the ledger (enforcement/new-session)."
+fi
+
+if [ ! -s "$CLAIMS" ]; then
+	exit 0    # ledger parsed cleanly and there are no active foreign claims
+fi
+
+# --- match each staged file against each foreign claim pattern --------------
+CONFLICT=0
+CONFLICT_MSG=""
+
+# glob match helper: returns 0 if $1 (path) matches $2 (pattern)
+matches() {
+	_path="$1"
+	_pat="$2"
+	# directory claim: pattern ends in '/' or names an existing dir -> prefix match
+	case "$_pat" in
+		*/) case "$_path" in "${_pat}"*) return 0 ;; esac ;;
+	esac
+	# expand a trailing /** to a prefix match
+	case "$_pat" in
+		*"/**") _pre=$(printf '%s' "$_pat" | sed -e 's|/\*\*$|/|')
+			case "$_path" in "${_pre}"*) return 0 ;; esac ;;
+	esac
+	# exact or fnmatch (case statement performs shell glob matching)
+	# shellcheck disable=SC2254
+	case "$_path" in
+		$_pat) return 0 ;;
+	esac
+	# a bare directory name (no glob chars, no slash-suffix) that a path sits under
+	case "$_pat" in
+		*[*?[]*) : ;;                       # has glob chars, already handled
+		*) case "$_path" in "${_pat}/"*) return 0 ;; esac ;;
+	esac
+	return 1
+}
+
+# Iterate staged paths (whole raw paths, spaces and non-ASCII intact). IFS is
+# cleared so no leading/trailing whitespace in a path is trimmed.
+while IFS= read -r f; do
+	[ -z "$f" ] && continue
+	while IFS="$(printf '\t')" read -r csess cpat; do
+		[ -z "$cpat" ] && continue
+		if matches "$f" "$cpat"; then
+			CONFLICT=1
+			CONFLICT_MSG="${CONFLICT_MSG}  $f  is claimed by session '$csess' (pattern: $cpat)
+"
+		fi
+	done < "$CLAIMS"
+done < "$STAGED_FILE"
+
+if [ "$CONFLICT" -ne 0 ]; then
+	printf '%s\n' \
+		"BLOCKED by pre-commit-claim (roadblock F14: file-claim collision)." \
+		"Current session: $CURRENT" \
+		"One or more staged files are claimed by a DIFFERENT active session:" >&2
+	printf '%s' "$CONFLICT_MSG" >&2
+	printf '%s\n' \
+		"Fix: coordinate with that session, or wait until it clears/parks its" \
+		"claim in $LEDGER. Do NOT edit files another session holds. If the claim" \
+		"is stale, have that session set its row status to parked/done first." >&2
+	exit 3
+fi
+
+exit 0

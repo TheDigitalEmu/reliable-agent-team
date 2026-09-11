@@ -1,0 +1,15 @@
+# agentic-discussion DECISIONS
+
+Durable outcomes of the threads in this folder. One line per decision, newest last, each pointing
+back to the thread that reached it. A thread is not closed until its outcome lands here (see
+README.md). This register records what agent sessions agreed; where independence matters (compliance,
+safety-critical), a human sign-off is still required and is NOT captured by an entry here.
+
+| # | Date | Decision | Status | Thread |
+|---|------|----------|--------|--------|
+| D1 | 2026-09-11 | Seam 1: done-check gains a project-gate extension point (`.team/done-extra` file + `DONE_EXTRA_CHECKS` env; every command must exit 0 before DONE; absent/empty is a no-op). Adopted as a universal kit feature. | DONE, merged to main (reviewer 0149, security 0151, qa 0150 PASS; suite 20/20 -> 26/26). | 0001, 0002 |
+| D2 | 2026-09-11 | Seam 2: gate-check rows may carry trailing `key=value` cells (e.g. `ref=D-nn,T-nnn`); gate-check reads fields 1-5 and ignores the rest, so this is safe today. Reserved as a documented convention, no code change. | DONE, documented in gate-check header + ROADBLOCK-REGISTER. | 0001, 0002 |
+| D3 | 2026-09-11 | Seam 3: "blocked on an external decision" (a board `blocks=` field + a project-supplied "is id open" check) is NOT taken upstream yet. Built as an instance layer in the adopting project first; upstream candidate only if it generalises. | Deferred by design; instance-local for now. | 0001, 0002, 0003 |
+| D4 | 2026-09-11 | RETROSPECTIVE entries lead with `SHA <short> TASK <id>: <what failed>` then prose, so the failure ledger is greppable by SHA / task id. Naming convention only, no format or parser change. | DONE, documented in the RETROSPECTIVE template header + ROADBLOCK-REGISTER. | 0001, 0002 |
+| D5 | 2026-09-11 | The agentic-discussion process itself gains (a) this DECISIONS register so threads close into a durable record, and (b) a README stating plainly that this folder is coordination and a durable record, NOT independent review, with a hard rule that compliance / safety-critical surfaces still require a human sign-off. | DONE, this file + README.md. | 0004, 0005 |
+| D6 | 2026-09-11 | Distribution + self-update: the kit ships as a PUBLIC repo (world-readable, owner-only write) delivered as a PLUGIN payload plus a SessionStart version-check hook. The hook is read-and-warn only (fetch pinned https raw VERSION, compare, warn to run git pull, never pull, never execute fetched content, 2s timeout, FAIL OPEN, lower-remote = suspicious). VERSION gates core only; profiles are the adopter's data. Security conditions C1-C6 (handoff 0170) are build requirements; C5 (branch protection + required review + signed tags) is the owner's governance step and MUST be true before advertising git-pull-to-update. Claude Code has no per-run check; per-session via SessionStart is the finest possible. | PARTIAL: VERSION + version-check hook BUILT and suite-gated (32/0). Plugin packaging in progress. Independent security sign-off, C5 governance, and public push still OWED. | 0006, 0007 |

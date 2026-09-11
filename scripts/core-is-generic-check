@@ -1,0 +1,122 @@
+#!/bin/sh
+# core-is-generic-check : prove CORE knows nothing about any specific stack or project.
+#
+# ROADBLOCK REMOVED (see ../ROADBLOCK-REGISTER.md):
+#   - "Core silently re-entangles with a project": a future edit that drops a stack or
+#     project token back into core fails LOUD here instead of shipping. This is a CHECK,
+#     wireable into CI (see WIRING below), so the core/profile boundary is enforced by
+#     machinery, not by reviewer memory.
+#
+# THE RULE (the durable one; this script is its mechanical proxy):
+#   Core references no specific language, framework, host, package manager, security
+#   control, or project. Core knows only git, POSIX sh, the ledgers, worktrees, change
+#   classes, the three gate roles, and the seam-1 EXTRA hook. Any knowledge of a specific
+#   stack or project belongs in a profile under profiles/.
+#
+# WHAT IT DOES
+#   Derives the scan set as tracked-files-minus-profiles/ (git ls-files, then drop
+#   anything under profiles/). It does NOT use a fixed hand-written path list, so a NEWLY
+#   ADDED core file cannot escape the scan (durability note, reviewer handoff 0167). It
+#   then greps that set, case-insensitively, for the stack/project token list. Zero hits
+#   over core is a PASS. Any hit is a boundary violation and names the file and line.
+#
+#   The profiles/ directory is the ONE place these tokens are allowed to live, so it is
+#   excluded from the scan. This script itself is also excluded: it must name the tokens
+#   to search for them, which is not a leak. A short, explicit META list is also excluded:
+#   handoff/provenance notes ABOUT the kit (e.g. HANDOVER.md) legitimately name where this
+#   copy came from, which is documentation of origin, not core re-entangling with a stack.
+#   The META list is deliberately tiny and named file-by-file so it can never hide a real
+#   leak in a payload file; only these exact meta docs are exempt (currently HANDOVER.md and
+#   WHY-KAREN.md, both provenance notes about the kit's own history).
+#
+# THE TOKEN LIST
+#   The tokens are the stack of the FIRST profile (Gelball). When a second profile brings
+#   a new stack, add its distinctive tokens to TOKENS below so core cannot absorb those
+#   either. The list is the mechanical proxy; the prose rule above is the real boundary.
+#
+# WIRING (CI)
+#   Run from the kit root:  sh scripts/core-is-generic-check
+#   Exit 0 = core is generic. Exit 1 = a boundary violation (prints each hit).
+#   Add it as a CI step and, optionally, as a .team/done-extra line for the kit repo.
+#
+# EXIT CODES
+#   0  no stack/project tokens found over core. PASS.
+#   1  at least one token found over core. FAIL; each hit is printed (file:line:match).
+#   2  usage / environment error (not a git repo).
+
+set -eu
+
+PROG="$(basename "$0")"
+
+# The kit may live at the repo root or in a subdirectory (for example when it is vendored
+# as a subfolder inside another repo). Anchor the scan at THIS script's kit dir and run
+# git from there, so git ls-files scopes to the kit and lists kit-relative paths. This
+# needs no native-vs-POSIX path comparison (those differ on some platforms).
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+KIT_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
+
+cd "$KIT_DIR" || { printf '%s: cannot cd to kit dir\n' "$PROG" >&2; exit 2; }
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+  printf '%s: not inside a git repository\n' "$PROG" >&2
+  exit 2
+}
+
+# The stack/project token list. Case-insensitive, ERE. Extend when a new profile adds a stack.
+TOKENS='gelball|supabase|next\.?js|\bnpm\b|\btsc\b|vercel|digitalocean|tailwind|\bCSP\b|\bRLS\b'
+
+# cwd is the kit dir, so git ls-files (with no pathspec) lists paths RELATIVE to the kit
+# dir: e.g. "scripts/done-check", "profiles/gelball.md". Exclusions are kit-relative too.
+SELF_REL="scripts/$PROG"
+
+# Meta/handoff docs ABOUT the kit, exempt for the reason in the header comment. Keep this
+# list tiny and explicit (one exact kit-relative path per line); never a directory or glob,
+# so a real payload leak can never slip in under a broad exclusion.
+META_EXCLUDES="HANDOVER.md
+WHY-KAREN.md"
+
+# Derive the scan set: tracked files under the kit dir, MINUS anything under profiles/,
+# MINUS this script itself (it must name the tokens to search for them, not a leak), MINUS
+# the explicit META docs above. Computed from the tracked tree so a newly added core file
+# is included automatically.
+SCAN_LIST="$(mktemp 2>/dev/null)" || { printf '%s: cannot create temp file\n' "$PROG" >&2; exit 2; }
+trap 'rm -f "$SCAN_LIST" "$SCAN_LIST.tmp"' EXIT INT TERM
+
+git ls-files \
+  | grep -v '^profiles/' \
+  | grep -vx "$SELF_REL" \
+  > "$SCAN_LIST"
+
+# Drop each META exclude by exact path (fixed-string, whole-line match).
+for m in $META_EXCLUDES; do
+  grep -vxF "$m" "$SCAN_LIST" > "$SCAN_LIST.tmp" && mv "$SCAN_LIST.tmp" "$SCAN_LIST"
+done
+
+if [ ! -s "$SCAN_LIST" ]; then
+  printf '%s: no core files found to scan (unexpected)\n' "$PROG" >&2
+  exit 2
+fi
+
+# Scan. grep -I skips binary files. Collect hits; any hit is a failure.
+HITS="$(mktemp 2>/dev/null)" || { printf '%s: cannot create temp file\n' "$PROG" >&2; exit 2; }
+# shellcheck disable=SC2064
+trap 'rm -f "$SCAN_LIST" "$HITS"' EXIT INT TERM
+
+FOUND=0
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  if grep -HniEI "$TOKENS" "$f" >> "$HITS" 2>/dev/null; then
+    FOUND=1
+  fi
+done < "$SCAN_LIST"
+
+COUNT="$(wc -l < "$SCAN_LIST" | tr -d ' ')"
+
+if [ "$FOUND" -ne 0 ]; then
+  printf '%s: FAIL. Stack/project token(s) found in CORE (must live in profiles/ only):\n' "$PROG" >&2
+  sed 's/^/  /' "$HITS" >&2
+  printf '%s: scanned %s core file(s); the hits above are boundary violations.\n' "$PROG" "$COUNT" >&2
+  exit 1
+fi
+
+printf '%s: PASS. 0 stack/project token hits over %s core file(s) (profiles/ excluded).\n' "$PROG" "$COUNT"
+exit 0

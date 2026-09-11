@@ -1,0 +1,13 @@
+# Shell scripts and hooks MUST keep LF endings so they run under sh on every
+# platform after a clone. A CRLF shebang line breaks the interpreter.
+*.sh text eol=lf
+enforcement/hooks/* text eol=lf
+enforcement/install-hooks text eol=lf
+enforcement/new-session text eol=lf
+scripts/* text eol=lf
+tests/* text eol=lf
+
+# Docs and data: normalize to LF in the repo too, for consistency.
+*.md text eol=lf
+*.json text eol=lf
+VERSION text eol=lf

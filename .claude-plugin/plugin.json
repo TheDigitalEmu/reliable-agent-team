@@ -1,0 +1,14 @@
+{
+  "name": "reliable-agent-team",
+  "description": "Enforcement kit for running an agent team reliably: guards, gates, and a per-session version check. Reliability from machinery, not memory.",
+  "version": "0.1.0",
+  "author": {
+    "name": "TheDigitalEmu"
+  },
+  "homepage": "https://github.com/TheDigitalEmu/reliable-agent-team",
+  "repository": "https://github.com/TheDigitalEmu/reliable-agent-team",
+  "license": "MIT",
+  "keywords": ["agents", "enforcement", "gates", "reliability", "worktrees"],
+  "hooks": "./hooks/hooks.json",
+  "skills": "./skills/"
+}

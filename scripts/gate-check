@@ -1,0 +1,344 @@
+#!/bin/sh
+# gate-check : verify that a commit has the required PASS gates, from a different author.
+#
+# ROADBLOCK REMOVED (see ../ROADBLOCK-REGISTER.md, "Gate and quality roadblocks"):
+#   - "Work merged before its gates pass" (F2): no PASS row bound to this SHA => FAIL.
+#   - "The agent that made the work signs off its own work" (F2): PASS author equal to
+#     work author => FAIL (self-sign-off).
+#   - "Commits added to an already-gated tip" (project): gates are bound to an EXACT SHA,
+#     so a new commit has no gate rows and fails until re-gated.
+#   - "Wrong change class gets the wrong gates" (F2): the required gate SET is chosen by
+#     change class; a static task needs fewer gates than an auth-data-input task.
+#
+# This is a CHECK: objective, unfudgeable when run. It reads a plain, greppable ledger.
+#
+# ---------------------------------------------------------------------------
+# LEDGER FORMAT (this is the contract the templates lane must match)
+#
+#   Default path: .team/GATES.md  (override with --ledger PATH, file or directory).
+#   If a directory is given, every *.md / *.tsv file in it is concatenated and read.
+#
+#   One gate PASS/FAIL is ONE line. Blank lines and lines starting with '#' are ignored,
+#   so the ledger can carry Markdown headings and prose around the rows. A row is any line
+#   with at least 5 pipe-delimited fields, in this fixed order:
+#
+#     commit_sha | change_class | gate | verdict | author
+#
+#   Field meaning:
+#     commit_sha    a git SHA the gate was run against. It MUST be at least as long as
+#                   the target SHA being checked, and the target must be a prefix of it.
+#                   In practice record the FULL 40/64-char SHA. A short row SHA (7 chars)
+#                   will NOT satisfy a longer target: matching is one-directional (target
+#                   is a prefix of the row SHA), never the reverse. See H1 in the review.
+#     change_class  one of: auth-data-input | static | presentational
+#     gate          one of: reviewer | security | qa
+#     verdict        PASS | FAIL | CHANGES-REQUESTED (case-insensitive; anything not PASS
+#                   is treated as a non-PASS verdict that BLOCKS the gate, see below).
+#     author        the agent/person who ran the gate (must differ from work author).
+#
+#   FAIL IS STICKY (H2). If ANY non-PASS verdict (FAIL, CHANGES-REQUESTED, or any other
+#   token) is recorded for a (gate, SHA), that gate is NOT satisfied, regardless of a later
+#   PASS row on the SAME SHA. A blocked review is only cleared by re-running the gate on a
+#   NEW commit (a new SHA), which starts with a clean slate. This makes "append a PASS to
+#   erase a FAIL" impossible without changing the code under review.
+#
+#   Surrounding whitespace and a leading table pipe are tolerated, so a Markdown table row
+#   like  "| 5bdc076 | static | reviewer | PASS | reviewer |"  is a valid gate row.
+#
+#   RESERVED TRAILING CELLS (seam 2, agentic-discussion/0001-0003). This parser reads
+#   ONLY fields 1 to 5 via `cut -d'|' -fN` and never inspects anything after field 5, so a
+#   row MAY carry extra trailing pipe-delimited cells and they are ignored, not tripped over.
+#   A project may therefore attach its own cross-reference metadata as trailing key=value
+#   cells, for example:
+#     SHA | class | gate | verdict | author | ref=D-15,T-014
+#   The kit does not parse or require the trailing cells; a project can require and
+#   cross-check them (a decision id, a test-register id) against its own registers so a
+#   sensitive PASS is answerable against those registers. These trailing cells are
+#   RESERVED FOR PROJECT USE: do NOT "tidy them away" and do NOT change the 5-field cut,
+#   or you break projects that depend on the pass-through. This is a documented, supported
+#   convention, not accidental behaviour.
+#
+#   Example rows:
+#     5bdc0763f... | auth-data-input | reviewer | PASS | alice
+#     5bdc0763f... | auth-data-input | security | PASS | bob
+#     5bdc0763f... | auth-data-input | qa       | PASS | carol
+#
+# ---------------------------------------------------------------------------
+# CHANGE CLASS -> REQUIRED GATES
+#   auth-data-input : reviewer + security + qa   (touches auth, data access, or input)
+#   static          : reviewer                   (static content only)
+#   presentational  : reviewer + qa              (interactive/visual UI, no data or input)
+# ---------------------------------------------------------------------------
+#
+# USAGE
+#   gate-check --sha <commit> [--class <change-class>] [--author <work-author>] \
+#              [--ledger <path>] [--board <path>]
+#   gate-check -h | --help
+#
+#   --sha alone (SHA-only mode, used by the pre-push hook, which only has a SHA):
+#     when --class is omitted, the change class is DERIVED from the ledger rows recorded
+#     for this SHA (they carry change_class per row). If no row records a class for this
+#     SHA, or rows disagree on the class, gate-check fails CLOSED (exit 2): an ungated or
+#     ambiguously-classed commit can never pass. When --author is also omitted, the work
+#     author is looked up from the task board (--board, default .team/TASKS.md) by SHA, so
+#     self-sign-off is enforced mechanically at push time, not only when a human passes it.
+#
+#   --author is the person/agent who DID the work. When supplied (or derived from the
+#   board), a PASS whose author equals the work author (case-insensitively, trimmed) is
+#   rejected as a self-sign-off. In SHA-only mode (no --author), if a board row is bound to
+#   the SHA but its author cannot be resolved (empty or missing author=), gate-check FAILS
+#   CLOSED (exit 1) rather than skipping the self-sign-off check (F2): a writable board must
+#   not be able to neutralise push-time self-sign enforcement by seeding an empty-author row.
+#   The self-sign-off check is skipped (warning only) ONLY when NO author is given and NO
+#   board row is bound to the SHA at all; the presence/verdict checks still run.
+#
+# EXIT CODES
+#   0  all required gates present, PASS, and independently authored.
+#   1  a required gate is missing, not PASS, or self-signed.
+#   2  usage / environment error (bad args, ledger not found, not in a git repo).
+#
+# HOW TO TEST (self-contained; use a full-length SHA for the target)
+#   S=1111111111111111111111111111111111111111
+#   FAIL:  printf '%s\n' "$S | static | reviewer | FAIL | alice" > /tmp/G.md
+#          ./gate-check --sha "$S" --class static --ledger /tmp/G.md ; echo $?        # -> 1
+#   PASS:  printf '%s\n' "$S | static | reviewer | PASS | reviewer" > /tmp/G.md
+#          ./gate-check --sha "$S" --class static --author alice \
+#              --ledger /tmp/G.md ; echo $?                                          # -> 0
+#   SELF:  printf '%s\n' "$S | static | reviewer | PASS | Alice" > /tmp/G.md
+#          ./gate-check --sha "$S" --class static --author alice \
+#              --ledger /tmp/G.md ; echo $?                                          # -> 1 (case-insensitive)
+#   STICKY-FAIL: two rows, FAIL then a later PASS on the SAME sha, still FAILs:
+#          printf '%s\n%s\n' "$S | static | reviewer | FAIL | bob" \
+#              "$S | static | reviewer | PASS | carol" > /tmp/G.md
+#          ./gate-check --sha "$S" --class static --ledger /tmp/G.md ; echo $?        # -> 1
+
+set -eu
+
+PROG="$(basename "$0")"
+
+usage() {
+  sed -n '2,113p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+die() {   # die <exit-code> <message...>
+  code="$1"; shift
+  printf '%s: %s\n' "$PROG" "$*" >&2
+  exit "$code"
+}
+
+SHA=""
+CLASS=""
+WORK_AUTHOR=""
+LEDGER=""
+BOARD=""
+AUTHOR_GIVEN=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --sha)     SHA="${2:-}"; shift 2 ;;
+    --class)   CLASS="${2:-}"; shift 2 ;;
+    --author)  WORK_AUTHOR="${2:-}"; AUTHOR_GIVEN=1; shift 2 ;;
+    --ledger)  LEDGER="${2:-}"; shift 2 ;;
+    --board)   BOARD="${2:-}"; shift 2 ;;
+    *) die 2 "unknown argument: $1 (try --help)" ;;
+  esac
+done
+
+[ -n "$SHA" ]   || die 2 "missing --sha (the commit the gates must be bound to)"
+
+# The target SHA must itself be a plausible git SHA of a safe minimum length, so a
+# 1-char "target" cannot prefix-match a whole family of ledger rows.
+case "$SHA" in
+  *[!0-9a-fA-F]*) die 2 "invalid --sha (must be hex): $SHA" ;;
+esac
+[ ${#SHA} -ge 7 ] || die 2 "invalid --sha (too short, need >= 7 hex chars): $SHA"
+
+# Locate the ledger BEFORE class derivation, since SHA-only mode reads the class from it.
+if [ -z "$LEDGER" ]; then
+  if   [ -f ".team/GATES.md" ]; then LEDGER=".team/GATES.md"
+  elif [ -d ".team/gates" ];    then LEDGER=".team/gates"
+  else die 2 "no ledger found (looked for .team/GATES.md and .team/gates/); pass --ledger PATH"
+  fi
+fi
+[ -e "$LEDGER" ] || die 2 "ledger path does not exist: $LEDGER"
+
+# Concatenate ledger content (single file or every *.md/*.tsv in a directory).
+read_ledger() {
+  if [ -d "$1" ]; then
+    found=""
+    for f in "$1"/*.md "$1"/*.tsv; do
+      [ -f "$f" ] || continue
+      found="yes"
+      cat "$f"
+    done
+    [ -n "$found" ] || die 2 "ledger directory has no *.md or *.tsv files: $1"
+  else
+    cat "$1"
+  fi
+}
+
+LEDGER_TEXT="$(read_ledger "$LEDGER")"
+
+# SHA matching is ONE-DIRECTIONAL (H1 fix). A ledger row satisfies the target only when the
+# TARGET is a prefix of the ROW sha, i.e. the row records a SHA at least as specific as the
+# target. A short (7-char) row SHA therefore does NOT gate a longer, more specific target,
+# so a low-entropy prefix row cannot gate a family of future commits. Both must be hex and
+# meet a safe minimum length; the target length is already validated above.
+sha_matches() {  # sha_matches <row_sha> <target_sha>
+  a="$1"; b="$2"     # a = ledger row sha, b = target sha
+  case "$a" in *[!0-9a-fA-F]*) return 1 ;; esac
+  [ ${#a} -ge 7 ] || return 1
+  [ ${#a} -ge ${#b} ] || return 1   # row must be at least as long as the target
+  # Compare case-insensitively: target must be a prefix of the row sha.
+  la=$(printf '%s' "$a" | tr '[:upper:]' '[:lower:]')
+  lb=$(printf '%s' "$b" | tr '[:upper:]' '[:lower:]')
+  case "$la" in "$lb"*) return 0 ;; esac
+  return 1
+}
+
+# Iterate over the parsed ledger rows for THIS sha, calling a callback with the fields.
+# A row is: sha | class | gate | verdict | author. Emits normalised, trimmed fields as
+# TAB-separated: sha<TAB>class<TAB>gate<TAB>verdict<TAB>author. Only rows whose sha
+# matches the target (target is a prefix of the row sha, H1) are emitted.
+ledger_rows_for_sha() {
+  printf '%s\n' "$LEDGER_TEXT" | while IFS= read -r line; do
+    case "$line" in ''|\#*) continue ;; esac
+    line=$(printf '%s' "$line" | sed 's/^[ \t]*|//')
+    case "$line" in *\|*\|*\|*\|*) : ;; *) continue ;; esac
+    r_sha=$(printf '%s' "$line" | cut -d'|' -f1 | sed 's/^[ \t]*//; s/[ \t]*$//')
+    r_class=$(printf '%s' "$line" | cut -d'|' -f2 | sed 's/^[ \t]*//; s/[ \t]*$//')
+    r_gate=$(printf '%s' "$line" | cut -d'|' -f3 | sed 's/^[ \t]*//; s/[ \t]*$//')
+    r_verdict=$(printf '%s' "$line" | cut -d'|' -f4 | sed 's/^[ \t]*//; s/[ \t]*$//')
+    r_author=$(printf '%s' "$line" | cut -d'|' -f5 | sed 's/^[ \t]*//; s/[ \t]*$//')
+    sha_matches "$r_sha" "$SHA" || continue
+    printf '%s\t%s\t%s\t%s\t%s\n' "$r_sha" "$r_class" "$r_gate" "$r_verdict" "$r_author"
+  done
+}
+
+# SHA-only mode: derive the change class from the ledger rows for this SHA.
+if [ -z "$CLASS" ]; then
+  derived="$(ledger_rows_for_sha | cut -f2 | sed 's/^[ \t]*//; s/[ \t]*$//' | grep -v '^$' | sort -u)"
+  n_classes=$(printf '%s\n' "$derived" | grep -c . || true)
+  if [ "${n_classes:-0}" -eq 0 ]; then
+    die 2 "no gate rows recorded for SHA $SHA (cannot derive change class); commit is UNGATED, failing closed"
+  elif [ "${n_classes:-0}" -gt 1 ]; then
+    die 2 "conflicting change classes recorded for SHA $SHA ($(printf '%s' "$derived" | tr '\n' ',' | sed 's/,$//')); failing closed"
+  fi
+  CLASS="$derived"
+  printf 'gate-check: derived change class "%s" from ledger for SHA %s\n' "$CLASS" "$SHA"
+fi
+
+# Required gate set per change class.
+case "$CLASS" in
+  auth-data-input) REQUIRED="reviewer security qa" ;;
+  static)          REQUIRED="reviewer" ;;
+  presentational)  REQUIRED="reviewer qa" ;;
+  *) die 2 "unknown change class: $CLASS (expected auth-data-input | static | presentational)" ;;
+esac
+
+# SHA-only self-sign-off: if no --author was given, look up the work author from the task
+# board by SHA so self-sign-off is enforced at push time (M2), not just when passed by hand.
+#
+# F2 (fail CLOSED on an unresolved author). If a board line MATCHES this SHA but yields an
+# EMPTY author (author= with nothing after it, or no author= field at all), we must NOT skip
+# the self-sign-off check. The board is writable at the same trust tier as the gate ledger,
+# so a seeded empty-author row for the SHA could otherwise neutralise push-time self-sign
+# enforcement and let a self-signed PASS through. When the board binds a row to the SHA but
+# the author cannot be resolved, BLOCK with a clear message. Skipping self-sign is only ever
+# allowed when NO board line is bound to the SHA at all (nothing to derive from).
+if [ "$AUTHOR_GIVEN" -eq 0 ]; then
+  [ -n "$BOARD" ] || { [ -f ".team/TASKS.md" ] && BOARD=".team/TASKS.md"; } || true
+  if [ -n "$BOARD" ] && [ -f "$BOARD" ]; then
+    # First non-comment board line mentioning this SHA (empty if none matches).
+    board_line=$(grep -v '^[[:space:]]*#' "$BOARD" 2>/dev/null \
+      | grep -F "$SHA" 2>/dev/null | head -n1 || true)
+    if [ -n "${board_line:-}" ]; then
+      # A board row is bound to this SHA: its author MUST resolve, or we fail closed.
+      board_author=$(printf '%s' "$board_line" \
+        | tr '|' '\n' | sed 's/^[ \t]*//; s/[ \t]*$//' \
+        | grep -E '^author=' | head -n1 | sed 's/^author=//' \
+        | sed 's/^[ \t]*//; s/[ \t]*$//')
+      if [ -n "${board_author:-}" ]; then
+        WORK_AUTHOR="$board_author"
+        printf 'gate-check: derived work author "%s" from board for SHA %s\n' "$WORK_AUTHOR" "$SHA"
+      else
+        die 1 "board row is bound to SHA $SHA but has an empty/missing author= field; cannot verify self-sign-off, failing closed. Set author= on the task row for this SHA."
+      fi
+    fi
+  fi
+fi
+
+# For a given gate name, classify every matching row for this SHA.
+# Emits one line per row: "PASS:<author>" | "SELFSIGN:<author>" | "NONPASS:<verdict>".
+# The caller resolves precedence with FAIL-wins (H2).
+gate_status() {  # gate_status <gate>
+  want_gate="$1"
+  ledger_rows_for_sha | while IFS="$(printf '\t')" read -r r_sha r_class r_gate r_verdict r_author; do
+    [ "$r_gate" = "$want_gate" ] || continue
+    v=$(printf '%s' "$r_verdict" | tr '[:lower:]' '[:upper:]')
+    if [ "$v" = "PASS" ]; then
+      # Case-insensitive, trimmed self-sign-off compare (M1).
+      if [ -n "$WORK_AUTHOR" ]; then
+        wa=$(printf '%s' "$WORK_AUTHOR" | tr '[:upper:]' '[:lower:]' | sed 's/^[ \t]*//; s/[ \t]*$//')
+        fa=$(printf '%s' "$r_author"    | tr '[:upper:]' '[:lower:]' | sed 's/^[ \t]*//; s/[ \t]*$//')
+        if [ "$fa" = "$wa" ]; then
+          printf 'SELFSIGN:%s\n' "$r_author"
+          continue
+        fi
+      fi
+      printf 'PASS:%s\n' "$r_author"
+    else
+      printf 'NONPASS:%s\n' "$r_verdict"
+    fi
+  done
+}
+
+if [ -z "$WORK_AUTHOR" ]; then
+  printf '%s: warning: no work author determined, self-sign-off check is SKIPPED for this run.\n' "$PROG" >&2
+fi
+
+FAILED=0
+printf 'gate-check: SHA=%s class=%s required=[%s]\n' "$SHA" "$CLASS" "$REQUIRED"
+
+for g in $REQUIRED; do
+  # Collect all row outcomes for this gate on this SHA.
+  results="$(gate_status "$g")"
+  # Precedence is FAIL-WINS (H2). Any non-PASS verdict for this (gate, SHA) BLOCKS the gate,
+  # regardless of a later PASS row on the same SHA, and so does a self-sign-off PASS. Order:
+  #   1. any NONPASS (FAIL / CHANGES-REQUESTED / anything not PASS)  -> BLOCK (sticky)
+  #   2. else any SELFSIGN                                            -> BLOCK
+  #   3. else a genuine independent PASS                              -> OK
+  #   4. else MISSING                                                 -> BLOCK
+  nonpass_line=$(printf '%s\n' "$results" | grep -m1 '^NONPASS:' || true)
+  self_line=$(printf '%s\n' "$results" | grep -m1 '^SELFSIGN:' || true)
+  pass_line=$(printf '%s\n' "$results" | grep -m1 '^PASS:' || true)
+
+  if [ -n "$nonpass_line" ]; then
+    v=${nonpass_line#NONPASS:}
+    printf '  BLOCK %-9s a non-PASS verdict "%s" is recorded for this SHA (FAIL is sticky)\n' "$g" "$v"
+    printf '        roadblock: work advancing past a failed gate (F2). A later PASS on the same\n'
+    printf '        SHA does NOT clear it; re-gate on a NEW commit.\n'
+    FAILED=1
+  elif [ -n "$self_line" ]; then
+    who=${self_line#SELFSIGN:}
+    printf '  BLOCK %-9s self-sign-off: PASS author "%s" is the work author\n' "$g" "$who"
+    printf '        roadblock: the agent that made the work signs off its own work (F2)\n'
+    FAILED=1
+  elif [ -n "$pass_line" ]; then
+    who=${pass_line#PASS:}
+    printf '  OK    %-9s PASS by %s\n' "$g" "$who"
+  else
+    printf '  BLOCK %-9s MISSING: no PASS row bound to SHA %s\n' "$g" "$SHA"
+    printf '        roadblock: work merged before its gates pass / gate not bound to SHA (F2)\n'
+    FAILED=1
+  fi
+done
+
+if [ "$FAILED" -ne 0 ]; then
+  printf 'gate-check: FAIL (see BLOCK lines above)\n' >&2
+  exit 1
+fi
+
+printf 'gate-check: PASS (all required gates present, PASS, independently authored)\n'
+exit 0

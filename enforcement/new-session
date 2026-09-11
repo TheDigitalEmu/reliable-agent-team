@@ -1,0 +1,187 @@
+#!/bin/sh
+# ============================================================================
+# new-session : per-session git worktree + claim-ledger bootstrap
+# ----------------------------------------------------------------------------
+# ROADBLOCK REMOVED
+#   F14 (coordination): "Two sessions share a checkout and wipe each other."
+#   See ROADBLOCK-REGISTER.md, Coordination roadblocks, class BLOCK, artifact
+#   enforcement/new-session (worktree setup). One git worktree per session
+#   makes cross-session file damage PHYSICALLY impossible: two sessions cannot
+#   move the same working tree's branch out from under each other because they
+#   no longer share a working tree. This is the BLOCK the pre-commit-claim
+#   hook then refines at file granularity.
+#
+# WHAT IT DOES (idempotent)
+#   1. Creates an isolated git worktree at <path> on a new (or existing)
+#      branch <branch>.
+#   2. Writes that worktree's whoami file (.team/whoami) with the session id,
+#      so the hooks know who "we" are inside that tree.
+#   3. Appends an ACTIVE-CLAIM row for the session to the shared ledger
+#      (default .team/SESSIONS.md) if the session has no active row yet.
+#
+# USAGE
+#   enforcement/new-session <session-name> <branch> [worktree-path] [claim-glob]
+#     session-name   short id for this agent session (e.g. dev-navbar)
+#     branch         branch to check out in the new worktree (created if new)
+#     worktree-path  where to place the worktree (default: ../<repo>-<session>)
+#     claim-glob     initial files/globs to claim (default: "(cleared)")
+#
+#   Env overrides:
+#     TEAM_LEDGER    claim ledger path relative to the MAIN repo
+#                    (default .team/SESSIONS.md)
+#     TEAM_BASE      base ref for a brand-new branch (default: current HEAD)
+#
+# SELF-TEST (scratch repo)
+#   git init -q demo && cd demo && git commit -q --allow-empty -m init
+#   mkdir -p .team && printf '| session | branch | files | task | status | updated |\n|---|---|---|---|---|---|\n' > .team/SESSIONS.md
+#   /path/to/new-session dev-a feature/a            # -> creates ../demo-dev-a worktree
+#   cat ../demo-dev-a/.team/whoami                  # -> dev-a       (PASS case)
+#   grep dev-a .team/SESSIONS.md                    # -> one active claim row
+#   /path/to/new-session dev-a feature/a            # re-run: idempotent, no dup row
+# ============================================================================
+
+set -eu
+
+usage() {
+	sed -n '2,40p' "$0" | sed -e 's/^# \{0,1\}//'
+	exit "${1:-0}"
+}
+
+case "${1:-}" in
+	-h|--help|"") [ -z "${1:-}" ] && { echo "error: session-name and branch are required." >&2; usage 2; }; usage 0 ;;
+esac
+
+SESSION="$1"
+BRANCH="${2:-}"
+if [ -z "$BRANCH" ]; then
+	echo "error: branch argument is required." >&2
+	usage 2
+fi
+
+# --- sanitise all fields that get written into the shared pipe-delimited ledger
+# (M5, ledger-row injection). A pipe forges extra columns; a newline forges a
+# whole extra row (a fake cleared row for another session, or a griefing
+# wildcard claim). Reject them, and reject leading/trailing whitespace and
+# control characters, before any of these values reach the ledger.
+reject_injection() {  # reject_injection <label> <value>
+	_lbl="$1"; _val="$2"
+	case "$_val" in
+		*'|'*) echo "error: $_lbl must not contain a pipe '|' (ledger injection)." >&2; exit 2 ;;
+	esac
+	# F1: reject a NEWLINE explicitly. A slipped newline forges a whole extra ledger
+	# row. Do NOT rely on `tr -d '[:print:]'` to catch it: msys/Git-Bash tr classifies
+	# newline as printable, so the newline survives that strip and slips through. Test
+	# for a literal newline directly, portably, by counting the value's lines: a clean
+	# value is exactly one line, so any embedded newline makes the count exceed one (a
+	# lone trailing newline is stripped by the command substitution, so wc sees 0 or 1).
+	_lines=$(printf '%s' "$_val" | wc -l | tr -d ' ')
+	if [ "${_lines:-0}" -gt 0 ]; then
+		echo "error: $_lbl must not contain a newline (ledger row injection)." >&2
+		exit 2
+	fi
+	# Any other control char (tab, CR, vtab, formfeed, NUL-adjacent, etc.): strip the
+	# graph class plus a literal space and, since tr misclassifies newline here (handled
+	# above), also strip newline; anything remaining is a control byte.
+	_ctl=$(printf '%s' "$_val" | tr -d '[:graph:] \n')
+	if [ -n "$_ctl" ]; then
+		echo "error: $_lbl must not contain control characters (ledger injection)." >&2
+		exit 2
+	fi
+	case "$_val" in
+		' '*|*' '|'	'*|*'	') echo "error: $_lbl must not have leading/trailing whitespace." >&2; exit 2 ;;
+	esac
+}
+reject_injection "session-name" "$SESSION"
+reject_injection "branch" "$BRANCH"
+# session name to a conservative charset (also protects the whoami/awk match).
+case "$SESSION" in
+	*[!A-Za-z0-9._-]*) echo "error: session-name may contain only letters, digits, dot, underscore, hyphen." >&2; exit 2 ;;
+esac
+
+# must be inside a git repo
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+	echo "BLOCKED (new-session): not inside a git repository. cd into your repo first." >&2
+	exit 2
+fi
+
+# resolve the MAIN worktree root (where the shared ledger lives) so re-running
+# new-session from inside a worktree still updates the one shared ledger.
+MAIN_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
+[ -n "${MAIN_ROOT:-}" ] || MAIN_ROOT=$(git rev-parse --show-toplevel)
+
+REPO_NAME=$(basename "$MAIN_ROOT")
+# Worktrees default to INSIDE the repo at .worktrees/ (gitignored), NOT the parent
+# root. Creating them in the parent (../<repo>-<session>) spreads stray folders across
+# the owner's root, a real incident on the source project. Keep them contained.
+WORKTREE_PATH="${3:-$MAIN_ROOT/.worktrees/${SESSION}}"
+CLAIM_GLOB="${4:-(cleared)}"
+# The claim glob and the worktree path are also written into the ledger row (M5).
+reject_injection "claim-glob" "$CLAIM_GLOB"
+reject_injection "worktree-path" "$WORKTREE_PATH"
+LEDGER_REL="${TEAM_LEDGER:-.team/SESSIONS.md}"
+LEDGER="$MAIN_ROOT/$LEDGER_REL"
+BASE="${TEAM_BASE:-HEAD}"
+
+# --- 1. create (or reuse) the worktree --------------------------------------
+if git worktree list --porcelain 2>/dev/null | grep -qx "worktree $WORKTREE_PATH" \
+	|| { [ -e "$WORKTREE_PATH" ] && git -C "$WORKTREE_PATH" rev-parse --git-dir >/dev/null 2>&1; }; then
+	echo "worktree already exists: $WORKTREE_PATH (reusing)"
+else
+	if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+		# branch exists: attach a worktree to it
+		git worktree add "$WORKTREE_PATH" "$BRANCH"
+		echo "added worktree $WORKTREE_PATH on existing branch $BRANCH"
+	else
+		# new branch off the base ref
+		git worktree add -b "$BRANCH" "$WORKTREE_PATH" "$BASE"
+		echo "added worktree $WORKTREE_PATH on new branch $BRANCH (base $BASE)"
+	fi
+fi
+
+# --- 2. write the whoami file in the worktree -------------------------------
+mkdir -p "$WORKTREE_PATH/.team"
+printf '%s\n' "$SESSION" > "$WORKTREE_PATH/.team/whoami"
+echo "wrote $WORKTREE_PATH/.team/whoami ($SESSION)"
+
+# --- 3. append a claim row to the shared ledger (idempotent) ----------------
+mkdir -p "$(dirname "$LEDGER")"
+if [ ! -f "$LEDGER" ]; then
+	{
+		printf '| session | branch / worktree | files / globs | task | status | updated |\n'
+		printf '|---|---|---|---|---|---|\n'
+	} > "$LEDGER"
+	echo "created ledger $LEDGER"
+fi
+
+NOW=$(date +%Y-%m-%d 2>/dev/null || echo "unknown-date")
+
+# already has an ACTIVE (non parked/done/cleared) row for this session?
+has_active=$(awk -F '|' -v s="$SESSION" '
+	{
+		gsub(/^[ \t]+|[ \t]+$/, "", $2);
+		st=$6; gsub(/^[ \t]+|[ \t]+$/, "", st); st=tolower(st);
+		if ($2==s && st!="parked" && st!="done" && st!="cleared" && st!="closed" && st!="") print "yes";
+	}' "$LEDGER" | head -n 1)
+
+if [ "${has_active:-}" = "yes" ]; then
+	echo "session '$SESSION' already has an active claim row in $LEDGER (leaving it)"
+else
+	printf '| %s | %s | %s | (session start) | working | %s |\n' \
+		"$SESSION" "$WORKTREE_PATH ($BRANCH)" "$CLAIM_GLOB" "$NOW" >> "$LEDGER"
+	echo "appended active claim row for '$SESSION' to $LEDGER"
+fi
+
+cat <<EOF
+
+Session ready.
+  session : $SESSION
+  branch  : $BRANCH
+  worktree: $WORKTREE_PATH
+  ledger  : $LEDGER
+
+Next:
+  cd "$WORKTREE_PATH"
+  # update your claim row's 'files / globs' cell in $LEDGER before touching files.
+  # commit/push are guarded by pre-commit-claim and pre-push-gate once installed
+  # (run enforcement/install-hooks in this repo if not done yet).
+EOF

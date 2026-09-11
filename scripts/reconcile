@@ -1,0 +1,150 @@
+#!/bin/sh
+# reconcile : re-read the board and re-verify every in-flight / recently-done item, so
+#             drift (marked done but not actually pushed, gated, or live) is caught.
+#
+# ROADBLOCK REMOVED (see ../ROADBLOCK-REGISTER.md, "Coordination roadblocks"):
+#   - "Stalling / letting an autonomous run die" (F8): the manager schedules reconcile on a
+#     timer; it re-drives the board so a pause advances (or at least surfaces) work.
+#   - "done-drift": an item marked done that no longer passes done-check is reported and
+#     makes reconcile exit non-zero, so drift is loud, not silent.
+#
+# This is a CHECK. It is a thin driver over scripts/done-check: it selects the tasks worth
+# re-verifying and runs done-check on each, aggregating the result.
+#
+# ---------------------------------------------------------------------------
+# BOARD FORMAT (same board scripts/done-check reads, default .team/TASKS.md)
+#   One task per line. reconcile only needs to know a line's task id and its status, plus
+#   the same fields done-check consumes (class=, author=, url=, path=, artifact=, sha=).
+#   Status is a pipe field:  status=in-flight | status=done | status=blocked | status=todo
+#   Lines starting '#' and blank lines are ignored.
+#
+#   By default reconcile re-verifies rows with status=in-flight or status=done.
+#   Rationale: in-flight items may have quietly stalled or already met done; done items may
+#   have drifted (a later commit invalidated the gate, origin rewound, the URL went down).
+#
+#   Example board lines:
+#     T41-example-a | class=auth-data-input | author=alice | status=done | url=https://example.test/account
+#     T42-example-b | class=static | author=bob | status=in-flight | url=https://example.test/page
+# ---------------------------------------------------------------------------
+#
+# USAGE
+#   reconcile [--tasks <path>] [--ledger <path>] [--branch <branch>]
+#             [--status <csv>]   (default: in-flight,done)
+#             [--only-done]      (re-verify only status=done rows; strict drift audit)
+#   reconcile -h | --help
+#
+# EXIT CODES
+#   0  every re-verified item passes done-check (no drift).
+#   1  at least one item failed done-check (drift or stall); report names each.
+#   2  usage / environment error (no board found, not a git repo).
+#
+# HOW TO TEST
+#   FAIL: a board with a status=done row whose branch is unpushed -> reconcile exits 1 and
+#         lists that task as DRIFTED.
+#   PASS: a board whose done rows all pass done-check -> reconcile exits 0.
+
+set -eu
+
+PROG="$(basename "$0")"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+usage() { sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; }
+die()  { code="$1"; shift; printf '%s: %s\n' "$PROG" "$*" >&2; exit "$code"; }
+
+TASKS=""
+LEDGER=""
+BRANCH=""
+STATUSES="in-flight,done"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help)   usage; exit 0 ;;
+    --tasks)     TASKS="${2:-}"; shift 2 ;;
+    --ledger)    LEDGER="${2:-}"; shift 2 ;;
+    --branch)    BRANCH="${2:-}"; shift 2 ;;
+    --status)    STATUSES="${2:-}"; shift 2 ;;
+    --only-done) STATUSES="done"; shift ;;
+    *) die 2 "unknown argument: $1 (try --help)" ;;
+  esac
+done
+
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die 2 "not inside a git repository"
+
+if [ -z "$TASKS" ]; then
+  if [ -f ".team/TASKS.md" ]; then TASKS=".team/TASKS.md"
+  else die 2 "no board found (looked for .team/TASKS.md); pass --tasks PATH"
+  fi
+fi
+[ -f "$TASKS" ] || die 2 "board not found: $TASKS"
+
+DC="$SCRIPT_DIR/done-check"
+[ -f "$DC" ] || die 2 "done-check not found next to reconcile at $DC"
+
+# status match helper: is $1 in the comma list $STATUSES ?
+status_wanted() {
+  case ",$STATUSES," in *",$1,"*) return 0 ;; esac
+  return 1
+}
+
+# Pull a pipe field key=value from a single board line.
+line_field() {  # line_field <line> <key>
+  printf '%s' "$1" | tr '|' '\n' \
+    | sed 's/^[ \t]*//; s/[ \t]*$//' \
+    | grep -E "^$2=" | head -n1 | sed "s/^$2=//"
+}
+
+TOTAL=0
+CHECKED=0
+FAILS=0
+FAIL_LIST=""
+
+printf 'reconcile: board=%s statuses=[%s]\n' "$TASKS" "$STATUSES"
+printf '%s\n' "----------------------------------------------------------------"
+
+# Read the board line by line.
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in ''|\#*|[[:space:]]*\#*) continue ;; esac
+  # A task line must have a status field to be considered.
+  st="$(line_field "$line" status || true)"
+  [ -n "$st" ] || continue
+  TOTAL=$((TOTAL + 1))
+  status_wanted "$st" || continue
+
+  # First whitespace/pipe token is the task id.
+  tid="$(printf '%s' "$line" | sed 's/[ \t]*|.*//; s/^[ \t]*//; s/[ \t]*$//')"
+  [ -n "$tid" ] || tid="$(printf '%s' "$line" | awk '{print $1}')"
+
+  CHECKED=$((CHECKED + 1))
+  printf '\n>> %s (status=%s)\n' "$tid" "$st"
+
+  DC_ARGS="--task $tid --tasks $TASKS"
+  [ -n "$LEDGER" ] && DC_ARGS="$DC_ARGS --ledger $LEDGER"
+  [ -n "$BRANCH" ] && DC_ARGS="$DC_ARGS --branch $BRANCH"
+
+  set +e
+  # shellcheck disable=SC2086
+  OUT="$(sh "$DC" $DC_ARGS 2>&1)"
+  RC=$?
+  set -e
+  printf '%s\n' "$OUT" | sed 's/^/   /'
+
+  if [ "$RC" -ne 0 ]; then
+    FAILS=$((FAILS + 1))
+    if [ "$st" = "done" ]; then
+      FAIL_LIST="$FAIL_LIST\n   DRIFTED: $tid (marked done but done-check FAILED)"
+    else
+      FAIL_LIST="$FAIL_LIST\n   STALLED/NOT-DONE: $tid (status=$st, done-check FAILED)"
+    fi
+  fi
+done < "$TASKS"
+
+printf '\n%s\n' "----------------------------------------------------------------"
+printf 'reconcile: %s task line(s) on board, %s re-verified, %s failed.\n' "$TOTAL" "$CHECKED" "$FAILS"
+
+if [ "$FAILS" -ne 0 ]; then
+  printf 'reconcile: DRIFT DETECTED:%b\n' "$FAIL_LIST" >&2
+  printf 'reconcile: roadblock: stalling/drift (F8), done-drift. Re-drive or correct the board.\n' >&2
+  exit 1
+fi
+
+printf 'reconcile: clean. No drift or stall among re-verified items.\n'
+exit 0

@@ -1,0 +1,193 @@
+#!/bin/sh
+# ============================================================================
+# install-hooks : opt-in installer for the enforcement git hooks
+# ----------------------------------------------------------------------------
+# ROADBLOCK REMOVED
+#   Enables the two BLOCK hooks:
+#     - pre-commit-claim  (F14 file-claim collision)
+#     - pre-push-gate     (F2 merged before gates pass; gate-bound-to-SHA)
+#   See ROADBLOCK-REGISTER.md. This installer is the ONLY supported way to
+#   wire them in, so a repo opts in explicitly and nothing is hijacked.
+#
+# WHAT IT DOES (idempotent)
+#   Two install modes:
+#     hookspath (default) : generates a small hooks dir at .git/team-hooks
+#                           containing git-standard-named wrappers (pre-commit,
+#                           pre-push) that exec the kit hooks, and points git
+#                           config core.hooksPath at it. Git only fires hooks
+#                           whose filenames match the standard names, which is
+#                           why a wrapper is needed (the kit files are named
+#                           pre-commit-claim / pre-push-gate). Always in sync
+#                           because the wrappers exec the kit files. Note: this
+#                           REPLACES any existing .git/hooks usage for the repo;
+#                           it prints a warning if custom hooks exist there.
+#     copy                : copies pre-commit-claim -> .git/hooks/pre-commit
+#                           and pre-push-gate -> .git/hooks/pre-push, chmod +x.
+#                           Backs up any existing hook to <name>.pre-team.bak.
+#                           Use this if the repo already relies on core.hooksPath
+#                           or on other hooks in .git/hooks.
+#
+# IMPORTANT (do not hijack a live repo)
+#   Running this changes THIS repo's git hook behaviour. It is opt-in on
+#   purpose. Do NOT run it in a repo whose hooks you do not own. If a repo
+#   vendors this kit as files only (for example a monorepo that adopts it),
+#   installing here would override that repo's own hooks: run it only in a
+#   fresh project that adopts the kit.
+#
+# USAGE
+#   enforcement/install-hooks [--mode hookspath|copy] [--uninstall]
+#
+# SELF-TEST (scratch repo)
+#   git init -q demo && cd demo
+#   /path/to/enforcement/install-hooks --mode copy
+#   test -x .git/hooks/pre-commit && test -x .git/hooks/pre-push && echo INSTALLED
+#   /path/to/enforcement/install-hooks --mode copy      # re-run: idempotent
+#   /path/to/enforcement/install-hooks --uninstall      # removes/reverts
+# ============================================================================
+
+set -eu
+
+MODE="hookspath"
+UNINSTALL=0
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--mode) MODE="${2:-}"; shift 2 ;;
+		--mode=*) MODE="${1#--mode=}"; shift ;;
+		--uninstall) UNINSTALL=1; shift ;;
+		-h|--help) sed -n '2,40p' "$0" | sed -e 's/^# \{0,1\}//'; exit 0 ;;
+		*) echo "install-hooks: unknown argument '$1'" >&2; exit 2 ;;
+	esac
+done
+
+case "$MODE" in
+	hookspath|copy) : ;;
+	*) echo "install-hooks: --mode must be 'hookspath' or 'copy' (got '$MODE')" >&2; exit 2 ;;
+esac
+
+# must be inside a git repo
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+	echo "install-hooks: not inside a git repository. cd into the target repo first." >&2
+	exit 2
+fi
+
+ENF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+HOOKS_SRC="$ENF_DIR/hooks"
+GIT_DIR=$(git rev-parse --git-dir)
+GIT_HOOKS="$GIT_DIR/hooks"
+
+[ -f "$HOOKS_SRC/pre-commit-claim" ] || { echo "install-hooks: missing $HOOKS_SRC/pre-commit-claim" >&2; exit 2; }
+[ -f "$HOOKS_SRC/pre-push-gate" ]   || { echo "install-hooks: missing $HOOKS_SRC/pre-push-gate"   >&2; exit 2; }
+
+# best-effort executable bits (harmless on Windows filesystems)
+chmod +x "$HOOKS_SRC/pre-commit-claim" "$HOOKS_SRC/pre-push-gate" 2>/dev/null || true
+
+# --------------------------------------------------------------------------
+WRAP_DIR="$GIT_DIR/team-hooks"
+
+SAVED_HP="$GIT_DIR/team-hooks.prev-hookspath"
+
+if [ "$UNINSTALL" -eq 1 ]; then
+	cur_hp=$(git config --local --get core.hooksPath 2>/dev/null || true)
+	if [ "$cur_hp" = "$WRAP_DIR" ] || [ "$cur_hp" = "$HOOKS_SRC" ]; then
+		# Restore a pre-existing core.hooksPath we saved at install time, instead of
+		# blindly unsetting and losing the user's original config (M6).
+		if [ -f "$SAVED_HP" ]; then
+			prev=$(cat "$SAVED_HP")
+			if [ -n "$prev" ]; then
+				git config --local core.hooksPath "$prev"
+				echo "uninstalled: restored core.hooksPath -> $prev (was $cur_hp)"
+			else
+				git config --local --unset core.hooksPath
+				echo "uninstalled: cleared core.hooksPath (was $cur_hp; no prior value)"
+			fi
+			rm -f "$SAVED_HP"
+		else
+			git config --local --unset core.hooksPath
+			echo "uninstalled: cleared core.hooksPath (was $cur_hp)"
+		fi
+		[ -d "$WRAP_DIR" ] && rm -rf "$WRAP_DIR" && echo "uninstalled: removed $WRAP_DIR"
+	fi
+	for pair in "pre-commit:pre-commit-claim" "pre-push:pre-push-gate"; do
+		name=${pair%%:*}
+		target="$GIT_HOOKS/$name"
+		if [ -f "$target" ] && grep -q "enforcement hook wrapper" "$target" 2>/dev/null; then
+			rm -f "$target"
+			echo "uninstalled: removed $target"
+			if [ -f "$target.pre-team.bak" ]; then
+				mv "$target.pre-team.bak" "$target"
+				echo "restored:    $target from backup"
+			fi
+		fi
+	done
+	echo "done (uninstall)."
+	exit 0
+fi
+
+# --------------------------------------------------------------------------
+if [ "$MODE" = "hookspath" ]; then
+	# warn if there are custom hooks in .git/hooks that hookspath will bypass
+	if [ -d "$GIT_HOOKS" ]; then
+		custom=$(find "$GIT_HOOKS" -maxdepth 1 -type f ! -name '*.sample' 2>/dev/null | head -n 1 || true)
+		if [ -n "$custom" ]; then
+			echo "WARNING: .git/hooks contains non-sample hooks; core.hooksPath will bypass them." >&2
+			echo "         If you need those, use --mode copy instead." >&2
+		fi
+	fi
+	# generate git-standard-named wrapper hooks that exec the kit hooks.
+	mkdir -p "$WRAP_DIR"
+	for pair in "pre-commit:pre-commit-claim" "pre-push:pre-push-gate"; do
+		name=${pair%%:*}
+		kit=${pair#*:}
+		cat > "$WRAP_DIR/$name" <<EOF
+#!/bin/sh
+# enforcement hook wrapper (installed by enforcement/install-hooks) -- do not edit.
+exec "$HOOKS_SRC/$kit" "\$@"
+EOF
+		chmod +x "$WRAP_DIR/$name" 2>/dev/null || true
+	done
+	# Save any pre-existing core.hooksPath so --uninstall can restore it (M6). Only
+	# save when it points somewhere OTHER than our own wrapper dir, and only once
+	# (do not clobber a saved value on a re-run, which would lose the original).
+	existing_hp=$(git config --local --get core.hooksPath 2>/dev/null || true)
+	if [ -n "$existing_hp" ] && [ "$existing_hp" != "$WRAP_DIR" ] && [ "$existing_hp" != "$HOOKS_SRC" ]; then
+		if [ ! -f "$SAVED_HP" ]; then
+			printf '%s\n' "$existing_hp" > "$SAVED_HP"
+			echo "note: saved existing core.hooksPath ($existing_hp) -> $SAVED_HP (restored on --uninstall)" >&2
+		fi
+		echo "WARNING: core.hooksPath was already set to $existing_hp; it is being replaced." >&2
+		echo "         The original is saved and restored by --uninstall." >&2
+	fi
+	git config --local core.hooksPath "$WRAP_DIR"
+	echo "installed (hookspath): core.hooksPath -> $WRAP_DIR"
+	echo "  wrappers: $WRAP_DIR/pre-commit -> $HOOKS_SRC/pre-commit-claim"
+	echo "            $WRAP_DIR/pre-push   -> $HOOKS_SRC/pre-push-gate"
+	echo "done."
+	exit 0
+fi
+
+# MODE = copy
+mkdir -p "$GIT_HOOKS"
+install_one() {
+	src="$1"; dest="$2"
+	# back up a pre-existing, non-kit hook once
+	if [ -f "$dest" ] && ! grep -q "enforcement hook wrapper" "$dest" 2>/dev/null; then
+		if [ ! -f "$dest.pre-team.bak" ]; then
+			cp "$dest" "$dest.pre-team.bak"
+			echo "backed up existing $dest -> $dest.pre-team.bak"
+		fi
+	fi
+	# write a tiny wrapper that execs the kit hook, so updates to the kit hook
+	# take effect without re-copying, and so we can detect our own installs.
+	cat > "$dest" <<EOF
+#!/bin/sh
+# enforcement hook wrapper (installed by enforcement/install-hooks) -- do not edit.
+exec "$src" "\$@"
+EOF
+	chmod +x "$dest" 2>/dev/null || true
+	echo "installed (copy): $dest -> $src"
+}
+
+install_one "$HOOKS_SRC/pre-commit-claim" "$GIT_HOOKS/pre-commit"
+install_one "$HOOKS_SRC/pre-push-gate"   "$GIT_HOOKS/pre-push"
+echo "done."

@@ -1,0 +1,143 @@
+#!/bin/sh
+# ============================================================================
+# session-version-check : warn (never act) when the adopted kit is behind
+#                         the public repo. Runs once per session.
+# ----------------------------------------------------------------------------
+# WHY THIS SHAPE (read before you change anything)
+#   Claude Code has NO per-run or per-turn check. The finest granularity that
+#   exists is ONCE PER SESSION, via a SessionStart hook. A skill cannot fire a
+#   per-turn network call; it is a static folder scanned at startup. So "check
+#   the repo when the skill is used" resolves to "check at session start". This
+#   hook is that check, and nothing finer is possible. Do not promise per-run.
+#
+# WHAT IT DOES
+#   1. Reads the LOCAL adopted version (the VERSION file shipped with this copy).
+#   2. Fetches the REMOTE VERSION file from a PINNED HTTPS raw URL.
+#   3. Compares them and prints a warning to STDERR if local is behind, telling
+#      the user to run `git pull` themselves. It changes nothing.
+#
+# WHAT IT NEVER DOES (hard security requirements, security review 0170 C3/C4)
+#   - Never auto-pulls. Never fetches-then-executes. Never downloads and runs an
+#     update script. Detecting a new version is automatic; APPLYING it is a human
+#     step (the user runs git pull, having read the diff).
+#   - Never follows a cross-host redirect for the version string.
+#   - Never blocks or hangs a session: a short timeout, and it FAILS OPEN. If
+#     GitHub is slow, offline, the fetch errors, or no fetch tool exists, it
+#     falls back to the local version and lets the session proceed silently.
+#   - A remote version LOWER than local is treated as SUSPICIOUS (possible
+#     tampering or a stale mirror), reported as such, and is NOT called an update.
+#   - The VERSION token gates CORE only. A project's own profile is its data and
+#     is never touched by this check or by the update it advises.
+#
+# EXIT CODES
+#   Always 0. This is advisory. A version check must never fail a session start.
+#   (It still prints its warning to stderr when behind.)
+#
+# CONFIGURE (env vars, all optional)
+#   TEAM_VERSION_URL    pinned raw URL of the remote VERSION file
+#                       (default: the canonical repo main VERSION)
+#   TEAM_LOCAL_VERSION  path to the local VERSION file
+#                       (default: resolved relative to this hook: ../../VERSION)
+#   TEAM_VERSION_TIMEOUT  fetch timeout in seconds (default 2)
+#
+# TESTS
+#   See ../../tests/integration-test (the VC* cases): behind -> warns; equal ->
+#   silent; ahead/lower-remote -> suspicious note; offline/timeout/no-tool ->
+#   silent pass (fail open). All assert exit 0 and never a network execution.
+# ============================================================================
+
+set -eu
+
+# Pinned, exact, TLS-only. No cross-host redirect is followed (see fetch below).
+DEFAULT_URL="https://raw.githubusercontent.com/TheDigitalEmu/reliable-agent-team/main/VERSION"
+URL="${TEAM_VERSION_URL:-$DEFAULT_URL}"
+TIMEOUT="${TEAM_VERSION_TIMEOUT:-2}"
+
+hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+LOCAL_FILE="${TEAM_LOCAL_VERSION:-$hook_dir/../../VERSION}"
+
+# --- local version: if we cannot read it, there is nothing to compare. Fail open.
+[ -f "$LOCAL_FILE" ] || exit 0
+LOCAL="$(tr -d ' \t\r\n' < "$LOCAL_FILE" 2>/dev/null || true)"
+[ -n "$LOCAL" ] || exit 0
+
+# --- fetch the remote version, bounded and safe -----------------------------
+# Requirements enforced here (0170 C4): HTTPS only, no cross-host redirect,
+# short max-time, quiet, and any non-success is treated as "unknown" -> fail open.
+# We deliberately do NOT pass -L / --location: a version string must not chase a
+# redirect to an arbitrary host.
+fetch_remote() {
+	# refuse anything that is not an https URL up front
+	case "$URL" in
+		https://*) : ;;
+		*) return 1 ;;
+	esac
+	if command -v curl >/dev/null 2>&1; then
+		# -f fail on HTTP error, -s silent, --max-time bound, no -L (no redirect).
+		# --proto and --tlsv1.2 harden the transport.
+		curl -fs --proto '=https' --tlsv1.2 --max-time "$TIMEOUT" -- "$URL" 2>/dev/null
+		return $?
+	fi
+	if command -v wget >/dev/null 2>&1; then
+		# --max-redirect=0 forbids redirects; -q quiet; -T timeout; -O- to stdout.
+		wget -q --max-redirect=0 -T "$TIMEOUT" -O- -- "$URL" 2>/dev/null
+		return $?
+	fi
+	return 1   # no fetch tool: unknown, fail open
+}
+
+REMOTE_RAW="$(fetch_remote || true)"
+REMOTE="$(printf '%s' "${REMOTE_RAW:-}" | tr -d ' \t\r\n' 2>/dev/null || true)"
+
+# No remote (offline, timeout, error, no tool): silent, proceed. FAIL OPEN.
+[ -n "$REMOTE" ] || exit 0
+
+# Guard against a junk body (an error page, HTML): the version must look like a
+# dotted numeric token. Anything else is "unknown", not an update. Fail open.
+case "$REMOTE" in
+	*[!0-9.]*) exit 0 ;;
+	'' ) exit 0 ;;
+esac
+
+# --- compare LOCAL vs REMOTE as dotted numeric versions ---------------------
+# Returns via echo: "eq", "local_behind", or "local_ahead".
+cmp_versions() {
+	l="$1"; r="$2"
+	# pad to three fields; compare field by field as integers
+	oldifs="$IFS"; IFS='.'
+	# shellcheck disable=SC2086
+	set -- $l; l1="${1:-0}"; l2="${2:-0}"; l3="${3:-0}"
+	# shellcheck disable=SC2086
+	set -- $r; r1="${1:-0}"; r2="${2:-0}"; r3="${3:-0}"
+	IFS="$oldifs"
+	# strip any accidental non-digits defensively
+	l1=${l1%%[!0-9]*}; l2=${l2%%[!0-9]*}; l3=${l3%%[!0-9]*}
+	r1=${r1%%[!0-9]*}; r2=${r2%%[!0-9]*}; r3=${r3%%[!0-9]*}
+	for pair in "$l1 $r1" "$l2 $r2" "$l3 $r3"; do
+		a=${pair% *}; b=${pair#* }
+		a=${a:-0}; b=${b:-0}
+		if [ "$a" -lt "$b" ]; then echo local_behind; return; fi
+		if [ "$a" -gt "$b" ]; then echo local_ahead; return; fi
+	done
+	echo eq
+}
+
+case "$(cmp_versions "$LOCAL" "$REMOTE")" in
+	eq)
+		exit 0 ;;   # up to date: silent
+	local_behind)
+		printf '%s\n' \
+			"[reliable-agent-team] Your kit core is behind the public repo." \
+			"  installed: $LOCAL   available: $REMOTE" \
+			"  To update, review the changes and run:  git pull" \
+			"  (This check only warns. It does not pull or run anything.)" >&2
+		exit 0 ;;
+	local_ahead)
+		printf '%s\n' \
+			"[reliable-agent-team] Note: your installed version ($LOCAL) is NEWER" \
+			"than the public repo ($REMOTE). If you did not expect this, treat the" \
+			"remote as suspicious (stale mirror or tampering) and do NOT downgrade." >&2
+		exit 0 ;;
+esac
+
+exit 0

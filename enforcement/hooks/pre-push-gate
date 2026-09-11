@@ -1,0 +1,138 @@
+#!/bin/sh
+# ============================================================================
+# pre-push-gate : gate-before-merge guard (git pre-push hook)
+# ----------------------------------------------------------------------------
+# ROADBLOCKS REMOVED
+#   - "Work merged before its gates pass" (F2). BLOCK.
+#   - "Commits added to an already-gated tip (gate invalidated)". BLOCK.
+#   See ROADBLOCK-REGISTER.md, Gate and quality roadblocks. The gate PASS is
+#   bound to a SPECIFIC commit SHA, so a new commit on top of a gated tip
+#   invalidates the gate and this hook re-requires it. Artifact:
+#   enforcement/hooks/pre-push-gate + scripts/gate-check.
+#
+# WHAT IT DOES
+#   git invokes a pre-push hook with the remote name and URL as arguments,
+#   and feeds one line per ref being pushed on stdin:
+#       <local ref> <local sha> <remote ref> <remote sha>
+#   For every ref that targets the protected branch (default: main), this
+#   hook shells out to gate-check IN SHA-ONLY MODE for the EXACT sha being
+#   pushed, and BLOCKS the push unless gate-check exits 0. Pushes to any other
+#   branch pass straight through. If gate-check is missing it fails CLOSED.
+#
+# CONTRACT WITH gate-check (this hook does not implement gate logic)
+#   scripts/gate-check --sha <commit-sha>
+#     The hook has only a SHA (git gives it nothing else), so it uses gate-check
+#     SHA-only mode: gate-check DERIVES the change class from the ledger rows
+#     recorded for that SHA, and DERIVES the work author from the task board by
+#     SHA, then enforces the matching gate set and self-sign-off.
+#     A SHA with no recorded class is UNGATED and fails CLOSED.
+#     exit 0  => all required gates for that commit's change class have a
+#               logged PASS for this exact SHA, from an author who is not the
+#               work author (self-sign-off rejected). Push allowed.
+#     exit !=0 => a gate is missing/failed/self-signed. gate-check prints why.
+#   This hook is deliberately dumb: SHA binding + fail-closed only. All policy
+#   (which gates, change classes, self-sign-off) lives in gate-check so the
+#   BLOCK and the CHECK stay separable and independently testable.
+#
+# INSTALL
+#   Run enforcement/install-hooks from the repo root (idempotent). Do not
+#   hijack a live repo's hooks by hand; install-hooks is the opt-in path.
+#
+# CONFIGURE (env vars)
+#   TEAM_PROTECTED_BRANCH   protected branch name   (default main)
+#   TEAM_GATE_CHECK         path to gate-check       (default: resolved
+#                           relative to this hook: ../scripts/gate-check)
+#
+# TESTS
+#   The authoritative test is the REAL end-to-end integration suite in
+#   ../../tests/integration-test, which installs the actual hooks and drives a
+#   real git push/commit through them against the REAL gate-check (no stubs, so
+#   the hook-to-gate-check contract is actually exercised). Run: sh tests/integration-test
+#
+#   Quick manual smoke (scratch repo; do NOT run against a real remote), driving
+#   the hook against the real gate-check with a real ledger. Use a full SHA and a
+#   ledger row that records the class for that SHA:
+#     printf 'refs/heads/main <SHA> refs/heads/main 0000\n' | ./pre-push-gate origin url
+#   PASSING : ledger has reviewer PASS by a non-author for <SHA>  -> exit 0
+#   FAILING : ledger has no PASS (or a FAIL) for <SHA>            -> exit 2
+#   UNGATED : ledger has no row for <SHA> at all                  -> exit 2 (fails closed)
+#   FAIL-CLOSED : delete gate-check                               -> exit 2
+#   PASS-THROUGH: push a non-main ref                             -> exit 0
+# ============================================================================
+
+set -eu
+
+PROTECTED="${TEAM_PROTECTED_BRANCH:-main}"
+
+# Resolve gate-check relative to this hook file. The kit layout is
+# reliable-agent-team/enforcement/hooks/pre-push-gate and the scripts live at
+# reliable-agent-team/scripts, so from the hook that is ../../scripts. We try the
+# real layout first, then a couple of tolerant fallbacks, so it works whether the
+# hook is invoked via a copied wrapper (exec of the real file), a symlink into
+# .git/hooks, or core.hooksPath.
+hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -n "${TEAM_GATE_CHECK:-}" ]; then
+	GATE_CHECK="$TEAM_GATE_CHECK"
+elif [ -e "$hook_dir/../../scripts/gate-check" ]; then
+	GATE_CHECK="$hook_dir/../../scripts/gate-check"   # enforcement/hooks -> scripts
+elif [ -e "$hook_dir/../scripts/gate-check" ]; then
+	GATE_CHECK="$hook_dir/../scripts/gate-check"       # tolerant fallback
+else
+	GATE_CHECK="$hook_dir/../../scripts/gate-check"    # canonical, for the error message
+fi
+
+ZERO="0000000000000000000000000000000000000000"
+
+# --- fail closed if gate-check is unavailable -------------------------------
+# gate_run runs gate-check with the exec bit when present, else via `sh` so the
+# gate still runs on filesystems without executable bits (Windows checkouts).
+if [ -x "$GATE_CHECK" ]; then
+	gate_run() { "$GATE_CHECK" "$@"; }
+elif [ -f "$GATE_CHECK" ]; then
+	gate_run() { sh "$GATE_CHECK" "$@"; }
+else
+	printf '%s\n' \
+		"BLOCKED by pre-push-gate (roadblock F2: merged before gates pass)." \
+		"Required gate-check script not found: $GATE_CHECK" \
+		"A missing gate-check fails CLOSED: a push to $PROTECTED cannot be" \
+		"proven gated, so it is refused." \
+		"Fix: install scripts/gate-check, or set TEAM_GATE_CHECK to its path." >&2
+	exit 2
+fi
+
+# --- inspect each ref being pushed (git feeds them on stdin) ----------------
+BLOCKED=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+	# blank line or deletion (local_sha all zeros) -> nothing to gate
+	[ -z "${remote_ref:-}" ] && continue
+	if [ "${local_sha:-$ZERO}" = "$ZERO" ]; then
+		continue   # deleting a remote ref, no new commits to gate
+	fi
+
+	# does this ref target the protected branch?
+	case "$remote_ref" in
+		"refs/heads/$PROTECTED"|"$PROTECTED") : ;;
+		*) continue ;;   # non-protected branch: pass through
+	esac
+
+	# gate-check the EXACT sha being pushed (SHA-bound gate, SHA-only mode:
+	# gate-check derives class from the ledger and author from the board).
+	if gate_run --sha "$local_sha"; then
+		: # gate passed for this sha
+	else
+		gc_code=$?
+		printf '%s\n' \
+			"BLOCKED by pre-push-gate: push to '$PROTECTED' refused." \
+			"Roadblock F2 (merged before gates pass) / gate-bound-to-SHA." \
+			"Commit $local_sha does not have the required gate PASS." \
+			"gate-check exited $gc_code (its message above names what is missing)." \
+			"Note: any NEW commit on top of a previously gated tip invalidates" \
+			"the gate and must be re-gated for its own SHA." \
+			"Fix: obtain the required reviewer/security/qa PASS for THIS commit," \
+			"then push again." >&2
+		BLOCKED=1
+	fi
+done
+
+[ "$BLOCKED" -eq 0 ] || exit 2
+exit 0

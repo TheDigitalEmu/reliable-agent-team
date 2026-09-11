@@ -1,0 +1,147 @@
+#!/bin/sh
+# self-test : prove the team substrate is installed BEFORE any real work starts.
+#
+# ROADBLOCK REMOVED (see ../ROADBLOCK-REGISTER.md, "Communication and memory roadblocks"):
+#   - "Guardrails set up AFTER work starts (retrofit)" (project): INSTALL.md orders the
+#     substrate first, and this self-test refuses to green-light work until hooks,
+#     worktrees/session marker, ledgers, and templates are all in place.
+#   - "No failure ledger kept" (F12): the self-test fails if RETROSPECTIVE is missing.
+#
+# This is a CHECK. Green means the ground is prepared. It verifies:
+#   (A) WORKTREE : more than one git worktree is in use (isolation active) OR a documented
+#                  single-session marker file exists (.team/SINGLE_SESSION).
+#   (B) HOOKS    : hooks are installed (core.hooksPath set to a real dir, OR .git/hooks has
+#                  at least one non-sample executable hook).
+#   (C) LEDGERS  : SESSIONS, GATES, TASKS, RETROSPECTIVE all exist under the team dir.
+#   (D) TEMPLATES: the required starting templates are present.
+#
+# ---------------------------------------------------------------------------
+# EXPECTED LAYOUT (override the team dir with --dir, default .team)
+#   .team/SESSIONS.md         claim ledger (who is touching what)
+#   .team/GATES.md            gate ledger (see scripts/gate-check for the row format)
+#   .team/TASKS.md            task board (see scripts/done-check for the line format)
+#   .team/RETROSPECTIVE.md    failure ledger (required, may start empty)
+#   .team/SINGLE_SESSION      OPTIONAL marker: present => single-session mode is allowed
+#                             even though only one worktree exists.
+#   .team/templates/          required templates live here:
+#       rulebook.md  roles.md  handoff.md  delegation.md
+#   .git/hooks/  OR  core.hooksPath  with an installed pre-commit / pre-push guard.
+# ---------------------------------------------------------------------------
+#
+# USAGE
+#   self-test [--dir <team-dir>]
+#   self-test -h | --help
+#
+# EXIT CODES
+#   0  substrate ready: safe to start real work.
+#   1  one or more pieces missing: prints exactly what to fix, DO NOT start work.
+#   2  usage / environment error (not a git repo).
+#
+# HOW TO TEST
+#   FAIL: run in a fresh repo with no .team dir       -> exit 1, lists every missing piece.
+#   PASS: create .team with the four ledgers + templates + a hook (or set core.hooksPath),
+#         and either a second worktree or .team/SINGLE_SESSION -> exit 0.
+
+set -eu
+
+PROG="$(basename "$0")"
+usage() { sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; }
+die()  { code="$1"; shift; printf '%s: %s\n' "$PROG" "$*" >&2; exit "$code"; }
+
+# Team directory: --dir wins, then TEAM_DIR env, then the .team default.
+TEAMDIR="${TEAM_DIR:-.team}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --dir)     TEAMDIR="${2:-}"; shift 2 ;;
+    *) die 2 "unknown argument: $1 (try --help)" ;;
+  esac
+done
+
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die 2 "not inside a git repository"
+
+FAILED=0
+note_ok()   { printf '  OK    %s\n' "$1"; }
+note_bad()  { printf '  FIX   %s\n' "$1"; FAILED=1; }
+
+printf 'self-test: checking team substrate in %s ...\n' "$TEAMDIR"
+
+# ---------------------------------------------------------- (A) WORKTREE ISOLATION
+WT_COUNT="$(git worktree list 2>/dev/null | grep -c . || echo 0)"
+if [ "$WT_COUNT" -gt 1 ]; then
+  note_ok "worktrees: $WT_COUNT in use (cross-session file damage is physically prevented)"
+elif [ -f "$TEAMDIR/SINGLE_SESSION" ]; then
+  note_ok "single-session marker present ($TEAMDIR/SINGLE_SESSION); isolation waived by policy"
+else
+  note_bad "worktrees: only one checkout and no $TEAMDIR/SINGLE_SESSION marker."
+  printf '        roadblock: sessions share a checkout and wipe each other (F14).\n'
+  printf '        Fix: create a worktree per session, or touch %s/SINGLE_SESSION if truly solo.\n' "$TEAMDIR"
+fi
+
+# ---------------------------------------------------------- (B) HOOKS INSTALLED
+HOOKS_OK=0
+HP="$(git config --get core.hooksPath 2>/dev/null || true)"
+if [ -n "$HP" ]; then
+  # Resolve relative to repo root.
+  ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+  case "$HP" in /*) HPD="$HP" ;; *) HPD="$ROOT/$HP" ;; esac
+  if [ -d "$HPD" ] && ls "$HPD" 2>/dev/null | grep -q .; then
+    note_ok "hooks: core.hooksPath -> $HP (populated)"
+    HOOKS_OK=1
+  else
+    note_bad "hooks: core.hooksPath set to $HP but it is empty or missing."
+  fi
+else
+  GITDIR="$(git rev-parse --git-dir 2>/dev/null || echo .git)"
+  # Any hook file that is not a .sample counts as installed.
+  if ls "$GITDIR/hooks" 2>/dev/null | grep -qv '\.sample$'; then
+    if ls "$GITDIR/hooks" 2>/dev/null | grep -q '^pre-'; then
+      note_ok "hooks: .git/hooks has installed pre-* hook(s)"
+      HOOKS_OK=1
+    fi
+  fi
+  if [ "$HOOKS_OK" -eq 0 ]; then
+    note_bad "hooks: no installed hook found (only samples in $GITDIR/hooks, no core.hooksPath)."
+    printf '        roadblock: guards not installed before work; claim-guard and gate-guard are absent.\n'
+    printf '        Fix: install enforcement/hooks or set core.hooksPath to the kit hooks dir.\n'
+  fi
+fi
+
+# ---------------------------------------------------------- (C) LEDGERS EXIST
+check_file() {  # check_file <relpath> <human label> <roadblock note>
+  if [ -f "$TEAMDIR/$1" ]; then
+    note_ok "ledger: $1 present"
+  else
+    note_bad "ledger: $1 MISSING"
+    [ -n "${3:-}" ] && printf '        %s\n' "$3"
+  fi
+}
+check_file "SESSIONS.md"      "sessions"      "roadblock: no claim ledger to detect file collisions (F14)."
+check_file "GATES.md"         "gates"         "roadblock: no gate ledger, gate-check has nothing to read (F2)."
+check_file "TASKS.md"         "tasks"         "roadblock: no board, reconcile/done-check cannot resolve tasks (F8)."
+check_file "RETROSPECTIVE.md" "retrospective" "roadblock: no failure ledger kept (F12). Ship it empty if new."
+
+# ---------------------------------------------------------- (D) TEMPLATES PRESENT
+TPL="$TEAMDIR/templates"
+if [ -d "$TPL" ]; then
+  for t in rulebook.md roles.md handoff.md delegation.md; do
+    if [ -f "$TPL/$t" ]; then
+      note_ok "template: templates/$t present"
+    else
+      note_bad "template: templates/$t MISSING"
+    fi
+  done
+else
+  note_bad "templates: $TPL directory MISSING (rulebook, roles, handoff, delegation)."
+  printf '        Fix: copy the kit templates/ into %s/templates/.\n' "$TEAMDIR"
+fi
+
+# ---------------------------------------------------------- verdict
+printf '\n'
+if [ "$FAILED" -ne 0 ]; then
+  printf 'self-test: NOT READY. Do NOT start real work until every FIX above is resolved.\n' >&2
+  printf 'self-test: roadblock removed by passing = guardrails retrofitted after work starts.\n' >&2
+  exit 1
+fi
+printf 'self-test: READY. Substrate is installed; safe to start work.\n'
+exit 0

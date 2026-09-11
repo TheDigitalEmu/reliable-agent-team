@@ -1,0 +1,482 @@
+#!/bin/sh
+# ============================================================================
+# integration-test : REAL end-to-end tests for the enforcement kit.
+# ----------------------------------------------------------------------------
+# These are the tests whose absence let C1 ship. The prior self-tests STUBBED
+# gate-check, so the hook-to-gate-check wiring was never exercised. Here we
+# install the ACTUAL hooks and drive a REAL git push/commit through them against
+# the REAL gate-check and pre-commit-claim (no stubs). Each case maps to a
+# finding from handoff 0098 and fails on the pre-fix code, passes on the fix.
+#
+# Cases:
+#   C1  a correctly-gated FULL sha actually PASSES the push (was: false-blocked).
+#   C1b an UNGATED sha (no ledger row) is BLOCKED at push (fails closed).
+#   H1  a PASS on a 7-char prefix does NOT gate a different full sha sharing it.
+#   H2  a FAIL followed by a later PASS on the SAME sha stays BLOCKED (sticky).
+#   M1  a PASS whose author case-differs from the work author is a self-sign-off
+#       and is BLOCKED.
+#   M2  self-sign-off is caught at PUSH time (author derived from the board),
+#       not only when gate-check is called by hand with --author.
+#   H3  a garbage ledger and a malformed (sub-5-pipe) row BLOCK the commit.
+#   M3/M4 a foreign claim on a spaced / non-ASCII path BLOCKS the commit.
+#   M5  a session-name / claim-glob with a pipe or newline is REJECTED by
+#       new-session (no ledger-row injection).
+#   F2  an empty-author board row matching the sha BLOCKS at push time (fails
+#       closed) instead of skipping the self-sign-off check.
+#   F1  a newline in the claim-glob / worktree-path is REJECTED by new-session
+#       (control chars caught on all args, not only via the session-name charset).
+#   POLICY presentational needs reviewer AND qa: reviewer-only BLOCKS, both ALLOW.
+#   KS1 done-check project-gate seam (agentic-discussion/0001-0003):
+#       (a) absent/empty done-extra + unset env is a no-op, DONE still reached;
+#       (b) a failing extra command BLOCKS done and names the command;
+#       (c) a passing extra command allows DONE;
+#       (d) the DONE_EXTRA_CHECKS env path is exercised (failing blocks, passing allows).
+#
+# Run: sh tests/integration-test        (plain POSIX sh; Git Bash + Linux)
+# Exit 0 => all pass. Exit 1 => a case failed (details printed).
+# ============================================================================
+
+set -eu
+
+KIT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+HOOKS_SRC="$KIT_DIR/enforcement/hooks"
+GATE_CHECK="$KIT_DIR/scripts/gate-check"
+NEW_SESSION="$KIT_DIR/enforcement/new-session"
+INSTALL="$KIT_DIR/enforcement/install-hooks"
+
+WORK=$(mktemp -d 2>/dev/null) || { echo "cannot mktemp -d"; exit 2; }
+trap 'rm -rf "$WORK"' EXIT INT TERM
+
+PASS_N=0
+FAIL_N=0
+ok()   { PASS_N=$((PASS_N + 1)); printf '  PASS  %s\n' "$1"; }
+bad()  { FAIL_N=$((FAIL_N + 1)); printf '  FAIL  %s\n' "$1"; }
+
+# A full 40-char hex SHA is what we bind gates to. Two share the same 7 prefix.
+FULL_A="abc1234000000000000000000000000000000ff"
+FULL_B="abc1234111111111111111111111111111111ee"   # same 7-char prefix abc1234
+PREFIX7="abc1234"
+
+git_quiet() { git "$@" >/dev/null 2>&1; }
+
+# Make an isolated work repo wired to a bare "remote", with the real hooks
+# installed via install-hooks (copy mode, so it works regardless of any ambient
+# core.hooksPath). Returns nothing; sets REPO and REMOTE globals.
+setup_repo() {
+	REMOTE="$WORK/remote-$1.git"
+	REPO="$WORK/repo-$1"
+	git init -q --bare "$REMOTE"
+	git init -q "$REPO"
+	cd "$REPO"
+	git_quiet config user.email t@t.t
+	git_quiet config user.name tester
+	git_quiet config commit.gpgsign false
+	git_quiet remote add origin "$REMOTE"
+	mkdir -p .team
+	printf 'me\n' > .team/whoami
+	printf '| session | branch / worktree | files / globs | task | status | updated |\n|---|---|---|---|---|---|\n' > .team/SESSIONS.md
+	: > .team/GATES.md
+	: > .team/TASKS.md
+	sh "$INSTALL" --mode copy >/dev/null 2>&1
+}
+
+# Seed a gate ledger row.  seed_gate <sha> <class> <gate> <verdict> <author>
+seed_gate() {
+	printf '%s | %s | %s | %s | %s\n' "$1" "$2" "$3" "$4" "$5" >> "$REPO/.team/GATES.md"
+}
+
+# Commit one file and force HEAD to the given fake SHA is impossible; instead we
+# make a REAL commit, read its real sha, and seed the ledger against THAT sha.
+# For prefix tests we need control of the sha, which we cannot forge, so those
+# cases drive gate-check directly on chosen shas (still the real gate-check, not
+# a stub) while the push cases use the real commit sha end to end.
+
+# Drive a real push of the current HEAD to origin/main and report the exit code.
+try_push() {
+	git push origin HEAD:refs/heads/main >/dev/null 2>&1
+}
+
+printf 'integration-test: real hook + gate-check wiring\n\n'
+
+# ---------------------------------------------------------------- C1 + C1b (push)
+setup_repo c1
+echo hello > file.txt
+git_quiet add file.txt
+git_quiet commit -m "work"
+HEAD_SHA=$(git rev-parse HEAD)
+
+# C1b: no ledger row yet -> push must be BLOCKED (ungated fails closed).
+if try_push; then bad "C1b ungated push should be blocked but was allowed"; else ok "C1b ungated commit blocked at push (fail closed)"; fi
+
+# C1: seed a full-set of gates for static class (reviewer only), PASS by not-me.
+seed_gate "$HEAD_SHA" static reviewer PASS reviewer
+# board records the work author so self-sign-off is derivable at push time.
+printf 'T1 | class=static | author=me | sha=%s\n' "$HEAD_SHA" >> "$REPO/.team/TASKS.md"
+if try_push; then ok "C1 correctly-gated full sha PASSES the push"; else bad "C1 correctly-gated push was blocked (regression of the C1 false-block)"; fi
+
+# ---------------------------------------------------------------- H1 (prefix)
+# A PASS recorded on a 7-char prefix must NOT satisfy a different full sha
+# sharing that prefix. Drive the real gate-check directly on chosen shas.
+setup_repo h1
+seed_gate "$PREFIX7" static reviewer PASS reviewer
+if sh "$GATE_CHECK" --sha "$FULL_A" --class static --author me --ledger "$REPO/.team/GATES.md" >/dev/null 2>&1; then
+	bad "H1 a 7-char-prefix PASS gated a full sha (prefix collision)"
+else
+	ok "H1 a 7-char-prefix PASS does NOT gate a full sha"
+fi
+# And a FULL-sha PASS row does gate its own sha (sanity, one-directional).
+seed_gate "$FULL_A" static reviewer PASS reviewer
+if sh "$GATE_CHECK" --sha "$FULL_A" --class static --author me --ledger "$REPO/.team/GATES.md" >/dev/null 2>&1; then
+	ok "H1 a full-sha PASS gates its own exact sha"
+else
+	bad "H1 a full-sha PASS failed to gate its own sha"
+fi
+
+# ---------------------------------------------------------------- H2 (sticky FAIL)
+setup_repo h2
+seed_gate "$FULL_A" static reviewer FAIL bob
+seed_gate "$FULL_A" static reviewer PASS carol   # later PASS on same sha
+if sh "$GATE_CHECK" --sha "$FULL_A" --class static --author me --ledger "$REPO/.team/GATES.md" >/dev/null 2>&1; then
+	bad "H2 a later PASS overrode a recorded FAIL (FAIL not sticky)"
+else
+	ok "H2 a recorded FAIL stays authoritative despite a later PASS"
+fi
+
+# ---------------------------------------------------------------- M1 (case self-sign)
+setup_repo m1
+seed_gate "$FULL_A" static reviewer PASS Alice
+if sh "$GATE_CHECK" --sha "$FULL_A" --class static --author alice --ledger "$REPO/.team/GATES.md" >/dev/null 2>&1; then
+	bad "M1 case-different author (Alice vs alice) evaded self-sign-off"
+else
+	ok "M1 case-insensitive self-sign-off is caught"
+fi
+
+# ---------------------------------------------------------------- M2 (self-sign at push)
+setup_repo m2
+echo hi > f.txt
+git_quiet add f.txt
+git_quiet commit -m "work by me"
+HEAD_SHA=$(git rev-parse HEAD)
+seed_gate "$HEAD_SHA" static reviewer PASS me            # PASS by the work author
+printf 'T1 | class=static | author=me | sha=%s\n' "$HEAD_SHA" >> "$REPO/.team/TASKS.md"
+if try_push; then
+	bad "M2 self-signed PASS was allowed through at push time"
+else
+	ok "M2 self-signed PASS blocked at push (author derived from board)"
+fi
+
+# ---------------------------------------------------------------- H3 (garbage ledger)
+setup_repo h3a
+printf 'this is not a table at all\njust garbage bytes @@@ ### \n' > "$REPO/.team/SESSIONS.md"
+echo x > g.txt
+git_quiet add g.txt
+if git commit -m "on garbage ledger" >/dev/null 2>&1; then
+	bad "H3 garbage ledger allowed the commit (fail open)"
+else
+	ok "H3 garbage ledger BLOCKS the commit (fail closed)"
+fi
+
+# H3 malformed sub-5-pipe row
+setup_repo h3b
+printf '| session | branch / worktree | files / globs | task | status | updated |\n|---|---|---|---|---|---|\n| other | br | src/a.txt |\n' > "$REPO/.team/SESSIONS.md"
+echo x > h.txt
+git_quiet add h.txt
+if git commit -m "on malformed row" >/dev/null 2>&1; then
+	bad "H3 malformed (sub-5-pipe) row allowed the commit (fail open)"
+else
+	ok "H3 malformed (sub-5-pipe) row BLOCKS the commit (fail closed)"
+fi
+
+# ---------------------------------------------------------------- M3/M4 (spaced/non-ASCII claim)
+setup_repo m3
+# a valid ledger with a foreign claim on a path containing a space
+printf '| session | branch / worktree | files / globs | task | status | updated |\n|---|---|---|---|---|---|\n| other | br | my file.txt | task | working | now |\n' > "$REPO/.team/SESSIONS.md"
+mkdir -p "$REPO"
+printf 'x\n' > "$REPO/my file.txt"
+git_quiet add "my file.txt"
+if git commit -m "touch spaced foreign-claimed file" >/dev/null 2>&1; then
+	bad "M3 commit to a spaced foreign-claimed path was ALLOWED (claim bypass)"
+else
+	ok "M3 commit to a spaced foreign-claimed path is BLOCKED"
+fi
+
+setup_repo m4
+NONASCII="cafe.txt"
+# use a real non-ASCII byte in the name where the filesystem allows it
+NONASCII=$(printf 'caf\303\251.txt')   # cafe with e-acute (UTF-8)
+printf '| session | branch / worktree | files / globs | task | status | updated |\n|---|---|---|---|---|---|\n| other | br | %s | task | working | now |\n' "$NONASCII" > "$REPO/.team/SESSIONS.md"
+if printf 'x\n' > "$REPO/$NONASCII" 2>/dev/null; then
+	git_quiet add "$NONASCII" || true
+	if git diff --cached --name-only | grep -q . ; then
+		if git commit -m "touch non-ascii foreign-claimed file" >/dev/null 2>&1; then
+			bad "M4 commit to a non-ASCII foreign-claimed path was ALLOWED (claim bypass)"
+		else
+			ok "M4 commit to a non-ASCII foreign-claimed path is BLOCKED"
+		fi
+	else
+		printf '  SKIP  M4 filesystem did not stage the non-ASCII path\n'
+	fi
+else
+	printf '  SKIP  M4 filesystem rejected the non-ASCII filename\n'
+fi
+
+# ---------------------------------------------------------------- M5 (ledger injection)
+setup_repo m5
+cd "$REPO"
+if sh "$NEW_SESSION" 'evil|inject' feature/x >/dev/null 2>&1; then
+	bad "M5 new-session accepted a pipe in the session name (ledger injection)"
+else
+	ok "M5 new-session rejects a pipe in the session name"
+fi
+# a newline-bearing session name (forge a whole row)
+INJ=$(printf 'evil\n| forged | b | ** | t | working | now')
+if sh "$NEW_SESSION" "$INJ" feature/x >/dev/null 2>&1; then
+	bad "M5 new-session accepted a newline in the session name (row forgery)"
+else
+	ok "M5 new-session rejects a newline in the session name"
+fi
+# a pipe in the claim-glob
+if sh "$NEW_SESSION" goodname feature/x "$WORK/wt-m5" 'src/**|forged' >/dev/null 2>&1; then
+	bad "M5 new-session accepted a pipe in the claim-glob (ledger injection)"
+else
+	ok "M5 new-session rejects a pipe in the claim-glob"
+fi
+
+# ---------------------------------------------------------------- F2 (empty-author board fails closed)
+# At push time gate-check derives the work author from the task board by sha. A
+# board line that MATCHES the sha but carries an EMPTY author= must NOT skip the
+# self-sign-off check: an attacker (or a malformed board) could otherwise seed an
+# empty-author row for the sha to neutralise push-time self-sign enforcement.
+# gate-check must FAIL CLOSED (block) when a board line matches the sha but the
+# author cannot be resolved, rather than silently skipping the self-sign check.
+setup_repo f2
+echo hi > f2.txt
+git_quiet add f2.txt
+git_quiet commit -m "work by me f2"
+HEAD_SHA=$(git rev-parse HEAD)
+# self-signed PASS (author = the work author "me")
+seed_gate "$HEAD_SHA" static reviewer PASS me
+# board line matches the sha but the author= field is EMPTY (the bypass seed)
+printf 'T1 | class=static | author= | sha=%s\n' "$HEAD_SHA" >> "$REPO/.team/TASKS.md"
+# SHA-only mode (no --author): matching board row yields empty author.
+if sh "$GATE_CHECK" --sha "$HEAD_SHA" --class static --board "$REPO/.team/TASKS.md" --ledger "$REPO/.team/GATES.md" >/dev/null 2>&1; then
+	bad "F2 empty-author board row let a self-signed PASS through (self-sign skipped, not fail-closed)"
+else
+	ok "F2 empty-author board row for the sha BLOCKS (fails closed, does not skip self-sign)"
+fi
+# Control: a populated author that DIFFERS from the gate author still passes.
+setup_repo f2b
+echo hi > f2b.txt
+git_quiet add f2b.txt
+git_quiet commit -m "work by me f2b"
+HEAD_SHA=$(git rev-parse HEAD)
+seed_gate "$HEAD_SHA" static reviewer PASS reviewer
+printf 'T1 | class=static | author=me | sha=%s\n' "$HEAD_SHA" >> "$REPO/.team/TASKS.md"
+if sh "$GATE_CHECK" --sha "$HEAD_SHA" --class static --board "$REPO/.team/TASKS.md" --ledger "$REPO/.team/GATES.md" >/dev/null 2>&1; then
+	ok "F2 control: a populated board author with an independent PASS still passes"
+else
+	bad "F2 control: a valid populated-author board row was wrongly blocked"
+fi
+
+# ---------------------------------------------------------------- F1 (newline in new-session args)
+# reject_injection must reject a NEWLINE (and other control chars) in EVERY
+# user-supplied arg, not only the pipe and not only via the session-name charset.
+# On msys/Git-Bash tr classifies newline as printable, so a [:print:]-only strip
+# let a newline slip through the claim-glob and worktree-path (which have no
+# charset allowlist), forging a split ledger row.
+# The fix must reject the newline at the injection guard (exit 2) BEFORE any git
+# or ledger write. Asserting on exit-code 2 AND an untouched ledger means the test
+# cannot pass for an incidental reason (e.g. git worktree-add failing on the odd
+# path). A fresh repo per sub-case keeps the ledger check independent.
+ledger_has_forgery() {  # ledger_has_forgery <ledger-path>
+	grep -q '^forged row' "$1" 2>/dev/null
+}
+# newline in the claim-glob (4th arg)
+setup_repo f1a
+cd "$REPO"
+echo seed > seed.txt; git_quiet add seed.txt; git_quiet commit -m "seed"
+LEDG="$REPO/.team/SESSIONS.md"
+NL_GLOB=$(printf 'src/**\nforged row')
+rc=0; sh "$NEW_SESSION" glob-nl feature/f1a "$WORK/wt-f1a" "$NL_GLOB" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ] && ! ledger_has_forgery "$LEDG"; then
+	ok "F1 new-session rejects a newline in the claim-glob (exit 2, no forged row)"
+else
+	bad "F1 newline in the claim-glob not rejected at the guard (rc=$rc, forgery=$(ledger_has_forgery "$LEDG" && echo yes || echo no))"
+fi
+# newline in the worktree-path (3rd arg)
+setup_repo f1b
+cd "$REPO"
+echo seed > seed.txt; git_quiet add seed.txt; git_quiet commit -m "seed"
+LEDG="$REPO/.team/SESSIONS.md"
+NL_PATH=$(printf '%s/wt-f1c\nforged row' "$WORK")
+rc=0; sh "$NEW_SESSION" path-nl feature/f1b "$NL_PATH" 'src/**' >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ] && ! ledger_has_forgery "$LEDG"; then
+	ok "F1 new-session rejects a newline in the worktree-path (exit 2, no forged row)"
+else
+	bad "F1 newline in the worktree-path not rejected at the guard (rc=$rc, forgery=$(ledger_has_forgery "$LEDG" && echo yes || echo no))"
+fi
+
+# ---------------------------------------------------------------- POLICY (presentational = reviewer + qa)
+# A presentational change requires reviewer AND qa. A reviewer-only PASS must be
+# BLOCKED (qa missing); reviewer + qa must be ALLOWED.
+setup_repo polA
+seed_gate "$FULL_A" presentational reviewer PASS reviewer
+if sh "$GATE_CHECK" --sha "$FULL_A" --class presentational --author me --ledger "$REPO/.team/GATES.md" >/dev/null 2>&1; then
+	bad "POLICY presentational with only a reviewer PASS was ALLOWED (qa gate not required)"
+else
+	ok "POLICY presentational with only a reviewer PASS is BLOCKED (qa required)"
+fi
+setup_repo polB
+seed_gate "$FULL_A" presentational reviewer PASS reviewer
+seed_gate "$FULL_A" presentational qa PASS qa
+if sh "$GATE_CHECK" --sha "$FULL_A" --class presentational --author me --ledger "$REPO/.team/GATES.md" >/dev/null 2>&1; then
+	ok "POLICY presentational with reviewer + qa PASS is ALLOWED"
+else
+	bad "POLICY presentational with reviewer + qa PASS was wrongly BLOCKED"
+fi
+
+# ---------------------------------------------------------------- KS1 (done-extra: project-gate seam)
+# done-check gains a project-gate extension point (seam 1, agentic-discussion/0001-0003):
+# a .team/done-extra file (one shell command per line, # and blank ignored) and a
+# DONE_EXTRA_CHECKS env, both additive, all must exit 0 before DONE. An absent/empty
+# file with unset env is a strict no-op (backward compatibility). We drive the REAL
+# done-check end to end: a real commit, pushed to a bare remote, with a real static
+# gate row so GIT + GATES pass, then vary only the extra-checks source.
+DONE_CHECK="$KIT_DIR/scripts/done-check"
+
+# Build a repo whose GIT + GATES + (no) ARTIFACT checks all pass, so the ONLY variable
+# under test is the EXTRA gate. Sets REPO/REMOTE and a resolved DONE_SHA global.
+setup_done_repo() {
+	setup_repo "$1"
+	echo hello > file.txt
+	git_quiet add file.txt
+	git_quiet commit -m "work"
+	DONE_SHA=$(git rev-parse HEAD)
+	seed_gate "$DONE_SHA" static reviewer PASS reviewer
+	printf 'T1 | class=static | author=me | sha=%s\n' "$DONE_SHA" >> "$REPO/.team/TASKS.md"
+	git push origin HEAD:refs/heads/main >/dev/null 2>&1 || true
+}
+
+# Run done-check for the standard task, no artifact. Extra args are passed through.
+run_done() {
+	sh "$DONE_CHECK" --task T1 --branch main --class static --author me \
+		--no-artifact --ledger "$REPO/.team/GATES.md" "$@" 2>&1
+}
+
+# (a) absent/empty done-extra + unset env is a no-op and DONE is still reached.
+setup_done_repo dxa
+cd "$REPO"
+if run_done >/dev/null 2>&1; then
+	ok "KS1a absent done-extra + unset env is a no-op, DONE still reached"
+else
+	bad "KS1a absent done-extra wrongly blocked DONE (backward-compat broken)"
+fi
+# present-but-empty file (only blanks and comments) is equally a no-op.
+printf '\n# a comment only\n\n' > "$REPO/.team/done-extra"
+if run_done >/dev/null 2>&1; then
+	ok "KS1a present-but-empty done-extra (comments/blanks) is a no-op, DONE reached"
+else
+	bad "KS1a comment-only done-extra wrongly blocked DONE"
+fi
+
+# (b) a failing extra command BLOCKS done (exit non-zero, names the command).
+setup_done_repo dxb
+cd "$REPO"
+printf 'true\nfalse\n' > "$REPO/.team/done-extra"
+set +e; OUT=$(run_done); RC=$?; set -e
+if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q 'BLOCK EXTRA' && printf '%s' "$OUT" | grep -q 'false'; then
+	ok "KS1b a failing extra command BLOCKS done and names the command"
+else
+	bad "KS1b failing extra command did not block/name (rc=$RC)"
+fi
+
+# (c) a passing extra command allows DONE (exit 0).
+setup_done_repo dxc
+cd "$REPO"
+printf '# run the project validator\ntrue\n' > "$REPO/.team/done-extra"
+if run_done >/dev/null 2>&1; then
+	ok "KS1c a passing extra command allows DONE"
+else
+	bad "KS1c a passing extra command wrongly blocked DONE"
+fi
+
+# (d) the DONE_EXTRA_CHECKS env path is exercised: failing env BLOCKS, passing env DONE.
+setup_done_repo dxd
+cd "$REPO"
+ENV_FAIL=$(printf 'true\nfalse')
+set +e; OUT=$(DONE_EXTRA_CHECKS="$ENV_FAIL" run_done); RC=$?; set -e
+if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q 'BLOCK EXTRA'; then
+	ok "KS1d a failing DONE_EXTRA_CHECKS env command BLOCKS done"
+else
+	bad "KS1d failing env command did not block done (rc=$RC)"
+fi
+if DONE_EXTRA_CHECKS="true" run_done >/dev/null 2>&1; then
+	ok "KS1d a passing DONE_EXTRA_CHECKS env command allows DONE"
+else
+	bad "KS1d passing env command wrongly blocked DONE"
+fi
+
+# ---------------------------------------------------------------- VC (session version-check)
+# The SessionStart version-check hook is READ-AND-WARN ONLY and must FAIL OPEN.
+# It fetches a pinned VERSION over HTTPS and compares to the local VERSION; it
+# never pulls, never executes anything fetched, never blocks a session (always
+# exit 0), and treats a lower remote or a junk body as "do not update". We drive
+# the REAL hook. To exercise the compare branches without a live network we build
+# a one-line variant that lets REMOTE_MOCK stand in for the fetch (the fetch code
+# path itself is covered by the non-https-refused and no-local-file cases, which
+# take the real fetch function and assert fail-open).
+VC_HOOK="$KIT_DIR/enforcement/hooks/session-version-check"
+VC_DIR="$WORK/vc"; mkdir -p "$VC_DIR"
+printf '0.1.0\n' > "$VC_DIR/VERSION"
+# variant that honours REMOTE_MOCK in place of the real fetch (compare-path tests)
+sed 's#REMOTE_RAW="$(fetch_remote || true)"#REMOTE_RAW="${REMOTE_MOCK-$(fetch_remote || true)}"#' \
+	"$VC_HOOK" > "$VC_DIR/hook-mock"
+
+vc_mock() { TEAM_LOCAL_VERSION="$VC_DIR/VERSION" REMOTE_MOCK="$1" sh "$VC_DIR/hook-mock" 2>"$VC_DIR/err"; echo $?; }
+
+# equal versions: silent, exit 0
+rc=$(vc_mock "0.1.0")
+if [ "$rc" -eq 0 ] && [ ! -s "$VC_DIR/err" ]; then
+	ok "VC equal version is silent and exits 0"
+else
+	bad "VC equal version was not silent/zero (rc=$rc, err=$(cat "$VC_DIR/err"))"
+fi
+# local behind: warns to stderr, still exit 0, and the warning must NOT tell it to auto-run
+rc=$(vc_mock "0.2.0")
+if [ "$rc" -eq 0 ] && grep -q 'behind' "$VC_DIR/err" && grep -q 'git pull' "$VC_DIR/err" \
+	&& ! grep -qiE 'curl|wget|\| *sh|eval|auto' "$VC_DIR/err"; then
+	ok "VC behind warns (git pull), exits 0, advises no auto-execution"
+else
+	bad "VC behind did not warn correctly (rc=$rc, err=$(cat "$VC_DIR/err"))"
+fi
+# local ahead / lower remote: treated as suspicious, not an update; exit 0
+rc=$(vc_mock "0.0.9")
+if [ "$rc" -eq 0 ] && grep -qi 'suspicious' "$VC_DIR/err" && ! grep -qi 'behind' "$VC_DIR/err"; then
+	ok "VC lower remote is flagged suspicious (not an update), exits 0"
+else
+	bad "VC lower remote not handled as suspicious (rc=$rc, err=$(cat "$VC_DIR/err"))"
+fi
+# junk / non-numeric body: no update, silent, exit 0 (fail open on garbage)
+rc=$(vc_mock "<html>404 Not Found</html>")
+if [ "$rc" -eq 0 ] && [ ! -s "$VC_DIR/err" ]; then
+	ok "VC junk remote body is ignored (silent, exit 0)"
+else
+	bad "VC junk remote body not ignored (rc=$rc, err=$(cat "$VC_DIR/err"))"
+fi
+# non-https URL is refused by the real fetch -> fail open, exit 0
+if TEAM_LOCAL_VERSION="$VC_DIR/VERSION" TEAM_VERSION_URL="http://example.com/VERSION" sh "$VC_HOOK" >/dev/null 2>&1; then
+	ok "VC non-https URL is refused and fails open (exit 0)"
+else
+	bad "VC non-https URL did not fail open"
+fi
+# missing local VERSION file -> nothing to compare -> fail open, exit 0
+if TEAM_LOCAL_VERSION="$VC_DIR/does-not-exist" sh "$VC_HOOK" >/dev/null 2>&1; then
+	ok "VC missing local VERSION fails open (exit 0)"
+else
+	bad "VC missing local VERSION did not fail open"
+fi
+
+# ---------------------------------------------------------------- verdict
+printf '\nintegration-test: %d passed, %d failed\n' "$PASS_N" "$FAIL_N"
+[ "$FAIL_N" -eq 0 ] || exit 1
+exit 0
