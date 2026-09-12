@@ -47,7 +47,8 @@ and fails open, so a slow or offline GitHub never blocks a session. Applying an 
 own `git pull` after you have read the diff. Claude Code has no per-run check; per-session is the
 finest granularity that exists, so the check runs at session start, not per message. The full design
 and its security conditions are recorded in `agentic-discussion/DECISIONS.md` (D6) and the distribution
-rows of `ROADBLOCK-REGISTER.md`. Why any of this care is warranted, read `WHY-KAREN.md`.
+rows of `ROADBLOCK-REGISTER.md`. When a change bumps `VERSION` (and so tells the wild to pull) is
+defined in `VERSIONING.md`. Why any of this care is warranted, read `WHY-KAREN.md`.
 
 ## The core / profile split
 Everything in this kit is written to be project-agnostic (the CORE). Any project's specifics (its
