@@ -1,0 +1,111 @@
+#!/bin/sh
+# ============================================================================
+# ensure-owasp : make the owasp-advisor security skill present and current.
+# ----------------------------------------------------------------------------
+# WHY
+#   The RAT's "security" gate is only meaningful if the security agent has the
+#   owasp-advisor skill. Without it the gate is a hollow checkbox. So the RAT
+#   install depends on this skill. This script guarantees it is installed, at a
+#   known-good path, without ever clobbering an existing or newer copy.
+#
+# WHAT IT DOES (detect, do not bull-at-a-gate)
+#   1. If the skill dir already exists: leave it in place. Try owasp's own
+#      version check (bin/version.js --check); if it reports behind (exit 10),
+#      say so and how to update. NEVER auto-clone over an existing install, and
+#      NEVER auto-pull (applying an update is a human step; same rule as the RAT
+#      version check).
+#   2. If the skill dir is absent: clone it once from the pinned public repo
+#      into ~/.claude/skills/owasp-advisor (owasp's own documented install path).
+#   3. Fail LOUD if the skill cannot be made present (a security dependency that
+#      is silently missing is the failure this whole kit exists to stop).
+#
+# EXIT CODES
+#   0  skill is present (already, or freshly cloned). Current, or behind-with-a-
+#      printed-warning. The RAT install may proceed.
+#   1  skill is absent and could not be installed (no git, clone failed, or the
+#      user declined). The security gate would be hollow; the caller must stop.
+#
+# CONFIGURE (env)
+#   OWASP_SKILL_DIR   install path (default: ~/.claude/skills/owasp-advisor)
+#   OWASP_REPO_URL    clone URL   (default: the pinned public repo)
+#   OWASP_ASSUME_YES  if set to 1, clone without prompting (for non-interactive
+#                     installs). Default is to prompt before the network clone.
+# ============================================================================
+
+set -eu
+
+PROG="$(basename "$0")"
+
+# Resolve the user home in a POSIX-and-Windows tolerant way.
+HOME_DIR="${HOME:-${USERPROFILE:-}}"
+[ -n "$HOME_DIR" ] || { printf '%s: cannot resolve home directory\n' "$PROG" >&2; exit 1; }
+
+SKILL_DIR="${OWASP_SKILL_DIR:-$HOME_DIR/.claude/skills/owasp-advisor}"
+REPO_URL="${OWASP_REPO_URL:-https://github.com/TheDigitalEmu/owasp-security-advisor.git}"
+
+skill_present() {
+	# Present means the dir exists and carries the skill's SKILL.md.
+	[ -d "$SKILL_DIR" ] && [ -f "$SKILL_DIR/SKILL.md" ]
+}
+
+installed_version() {
+	[ -f "$SKILL_DIR/SKILL.md" ] || { printf 'unknown'; return; }
+	v="$(grep -m1 -i '^version:' "$SKILL_DIR/SKILL.md" 2>/dev/null | sed 's/^[Vv]ersion:[[:space:]]*//' | tr -d ' \t\r')"
+	[ -n "$v" ] && printf '%s' "$v" || printf 'unknown'
+}
+
+# --- case 1: already installed -----------------------------------------------
+if skill_present; then
+	printf '%s: owasp-advisor present at %s (version %s).\n' "$PROG" "$SKILL_DIR" "$(installed_version)"
+	# Best-effort behind-check using owasp's own script. Never blocks, never pulls.
+	if command -v node >/dev/null 2>&1 && [ -f "$SKILL_DIR/bin/version.js" ]; then
+		set +e
+		( cd "$SKILL_DIR" && node bin/version.js --check >/dev/null 2>&1 )
+		rc=$?
+		set -e
+		if [ "$rc" -eq 10 ]; then
+			printf '%s: an owasp-advisor update is available. Review and update it:\n' "$PROG" >&2
+			printf '  cd "%s" && git pull   (read-and-warn only; this script does not pull)\n' "$SKILL_DIR" >&2
+		fi
+	fi
+	exit 0
+fi
+
+# --- case 2: not installed -> clone once -------------------------------------
+if ! command -v git >/dev/null 2>&1; then
+	printf '%s: git is required to install owasp-advisor and was not found.\n' "$PROG" >&2
+	printf '  The RAT security gate depends on this skill; install git, then re-run.\n' "$PROG" >&2
+	exit 1
+fi
+
+# A path exists but is not a valid skill: do NOT clobber it. Refuse and report.
+if [ -e "$SKILL_DIR" ]; then
+	printf '%s: %s exists but is not a valid owasp-advisor install (no SKILL.md).\n' "$PROG" "$SKILL_DIR" >&2
+	printf '  Refusing to overwrite it. Move it aside or fix it, then re-run.\n' "$PROG" >&2
+	exit 1
+fi
+
+if [ "${OWASP_ASSUME_YES:-0}" != "1" ]; then
+	printf '%s: owasp-advisor is not installed.\n' "$PROG"
+	printf '  About to clone %s\n' "$REPO_URL"
+	printf '  into %s\n' "$SKILL_DIR"
+	printf '  Proceed? [y/N] '
+	read -r ans 2>/dev/null || ans=""
+	case "$ans" in
+		y|Y|yes|YES) : ;;
+		*) printf '%s: declined. The security gate is hollow without this skill; install it before relying on the gate.\n' "$PROG" >&2; exit 1 ;;
+	esac
+fi
+
+mkdir -p "$(dirname "$SKILL_DIR")"
+if git clone --depth 1 "$REPO_URL" "$SKILL_DIR" >/dev/null 2>&1; then
+	if skill_present; then
+		printf '%s: installed owasp-advisor (version %s) at %s.\n' "$PROG" "$(installed_version)" "$SKILL_DIR"
+		exit 0
+	fi
+	printf '%s: clone completed but no SKILL.md was found; install looks broken.\n' "$PROG" >&2
+	exit 1
+fi
+
+printf '%s: failed to clone %s. The RAT security gate depends on it; resolve and re-run.\n' "$PROG" "$REPO_URL" >&2
+exit 1

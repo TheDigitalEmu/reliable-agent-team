@@ -476,6 +476,54 @@ else
 	bad "VC missing local VERSION did not fail open"
 fi
 
+# ---------------------------------------------------------------- EO (ensure-owasp dependency)
+# ensure-owasp must: report an existing install and exit 0 (no clobber); refuse a
+# path that exists but is not a valid skill (exit 1); and decline-to-clone when a
+# clone would be needed but is not confirmed (exit 1). We do NOT exercise the real
+# network clone here (that is covered by a manual live test); these cases assert the
+# detect-do-not-bull-at-a-gate behavior with no network.
+ENSURE="$KIT_DIR/enforcement/ensure-owasp"
+EO="$WORK/eo"; mkdir -p "$EO"
+
+# present: a dir with SKILL.md -> exit 0, leaves it in place
+mkdir -p "$EO/present"; printf 'version: 9.9.9\n' > "$EO/present/SKILL.md"
+if OWASP_SKILL_DIR="$EO/present" sh "$ENSURE" >/dev/null 2>&1; then
+	ok "EO existing install is detected and left untouched (exit 0)"
+else
+	bad "EO existing install was not accepted (exit non-zero)"
+fi
+# still there, unmodified
+if [ -f "$EO/present/SKILL.md" ] && grep -q '9.9.9' "$EO/present/SKILL.md"; then
+	ok "EO existing install is not clobbered"
+else
+	bad "EO existing install was modified/removed"
+fi
+
+# exists-but-invalid: a dir with no SKILL.md -> refuse, exit 1, do not touch it
+mkdir -p "$EO/bad"; printf 'keep\n' > "$EO/bad/keep.txt"
+if OWASP_SKILL_DIR="$EO/bad" OWASP_ASSUME_YES=1 sh "$ENSURE" >/dev/null 2>&1; then
+	bad "EO clobbered / accepted an invalid install dir (should refuse)"
+else
+	ok "EO refuses to overwrite a non-skill dir (exit 1)"
+fi
+if [ -f "$EO/bad/keep.txt" ]; then
+	ok "EO leaves the refused dir's contents intact"
+else
+	bad "EO destroyed contents of the refused dir"
+fi
+
+# absent + not confirmed (empty stdin, no ASSUME_YES) -> decline, exit 1, no dir made
+if OWASP_SKILL_DIR="$EO/none" sh "$ENSURE" </dev/null >/dev/null 2>&1; then
+	bad "EO cloned without confirmation (should decline)"
+else
+	ok "EO declines to clone without confirmation (exit 1)"
+fi
+if [ ! -e "$EO/none" ]; then
+	ok "EO created nothing when the clone was declined"
+else
+	bad "EO left a directory behind after declining"
+fi
+
 # ---------------------------------------------------------------- verdict
 printf '\nintegration-test: %d passed, %d failed\n' "$PASS_N" "$FAIL_N"
 [ "$FAIL_N" -eq 0 ] || exit 1

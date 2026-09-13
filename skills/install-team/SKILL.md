@@ -23,6 +23,11 @@ file is authoritative. Do not improvise past it.
    Copy only commands the user has read and trusts. Never paste a line that fetches remote content and
    pipes it into a shell.
 4. Install the two universal hooks (Step 2) with `${CLAUDE_PLUGIN_ROOT}/enforcement/install-hooks`.
+   Then ensure the security dependency is present: run
+   `sh ${CLAUDE_PLUGIN_ROOT}/enforcement/ensure-owasp`. It installs the
+   owasp-advisor skill if absent and leaves an existing copy untouched (warning
+   if it is behind). The RAT security gate is a hollow checkbox without it, so if
+   this exits non-zero, stop and resolve it before relying on the gate.
 5. Create the first worktree INSIDE the repo (Step 3). Never in the parent folder.
 6. Run `${CLAUDE_PLUGIN_ROOT}/scripts/self-test` and refuse to start real work until it exits 0
    (Step 4).

@@ -52,6 +52,14 @@ Core ships ONLY these two universal hooks. Any project-specific hooks (see the p
 HOOKS section) are installed separately with the project's own tooling, not by install-hooks.
 Confirm the hooks are executable and registered before proceeding.
 
+## Step 2b: Ensure the security dependency (owasp-advisor)
+The kit's `security` gate is only meaningful if the security agent has the owasp-advisor skill. Run
+`sh enforcement/ensure-owasp`. It detects an existing install and leaves it untouched (warning if it
+is behind), or clones the skill once into `~/.claude/skills/owasp-advisor` if absent. It never
+clobbers an existing or newer copy, and it never auto-pulls (applying an update is a human `git pull`,
+same rule as the version check). A hollow security gate is worse than none: if this step cannot make
+the skill present, stop and resolve it before treating any `security` PASS as real.
+
 ## Step 3: Create the first worktree (INSIDE the repo)
 First make worktrees live inside the repo so they never pollute the owner's root: add `.worktrees/`
 to `.gitignore` and run `git config extensions.worktreeConfig true`. Then run `enforcement/new-session`
