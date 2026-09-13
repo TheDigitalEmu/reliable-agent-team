@@ -3,7 +3,8 @@
 > **If you were told to "install this": read `INSTALL.md` and follow it in order.**
 > That file is the authoritative, step-by-step procedure. Do the steps in order,
 > do not start real work until `scripts/self-test` exits 0, and never weaken a
-> guard to make a step pass. Everything else in this README is context.
+> guard to make a step pass. To RUN the team day to day after install, read
+> `OPERATING.md`. Everything else in this README is context.
 
 A buildable kit for standing up an agent team whose reliability comes from ENFORCEMENT, not from
 agents remembering to behave. This is the answer to a specific failure: a described rule is a rule
