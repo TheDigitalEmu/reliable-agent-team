@@ -93,6 +93,15 @@ and the security conditions C1 to C6 recorded with this kit's distribution desig
 | A bad or malicious push to public main propagates to every puller | (distribution, governance) | Branch protection + required review + signed release tags on the public repo BEFORE git-pull-to-update is advertised (condition C5). This is the whole trust boundary of a public self-updating kit and is the OWNER's governance step, not an agent action. Until it is true, adopters update by reading the diff, not by blind pull. | PROCEDURE (owner-owned) | repo governance, INSTALL.md Step 7 |
 | An update overwrites a project's own filled profile | (distribution) | VERSION gates CORE only. Profiles and `.team/` are the adopting project's data; an update refreshes core and never overwrites a filled profile (consistent with core-reads-only-`.team/`). | CONVENTION | agentic-discussion D6 |
 | A shipped example profile tempts an adopter into running a dangerous default | (distribution) | Shipped profiles' gate commands must be inspection-only, local, read-only (C1); INSTALL carries an explicit review-before-you-paste warning (C2) because `.team/done-extra` runs with the user's full shell privileges. | PROCEDURE + CHECK | INSTALL.md Step 1b, profiles/example.md |
+| The security gate is hollow (a PASS with no real review behind it) | (distribution) | The kit's security gate is only meaningful if the security agent has the owasp-advisor review skill. Install ensures it is present (detect, clone-if-absent, never clobber, never auto-pull). Honest limit: a same-model reviewer is not an independent lens; anything critical needs a human or a different model. | CHECK + PROCEDURE | enforcement/ensure-owasp, OPERATING.md |
+| The kit's own version surfaces silently diverge | (distribution) | VERSION, plugin.json, and marketplace.json must agree; a mismatch means a bump was left incomplete and the self-update signal no longer matches the packaging. A check compares them and fails the suite on drift. | CHECK | scripts/version-consistency-check |
+
+## Cost and non-git-artifact roadblocks
+
+| Roadblock | Failure | Mechanism | Class | Artifact |
+|---|---|---|---|---|
+| Cost / token blowout: a team plus a reconcile timer spends without a cap | (cost) | A cost-check that compares current spend to a declared budget and BLOCKs at or over it, warns near it, and fails closed when spend is unreadable (an uncapped run is the failure). The kit supplies the gate and the rule; the environment supplies the spend number (--spend / --spend-cmd / TEAM_SPEND / TEAM_SPEND_CMD), the same seam pattern as done-extra. Wire it before a reconcile timer and as a done-extra line. | CHECK | scripts/cost-check |
+| "Done" claimed for a running service that is not actually up (non-git, non-HTTP) | (verification) | done-check gained a `port=` artifact: it asserts a live service answers on a host:port, the artifact a git check and an HTTP check both miss. Joins url= (HTTP 200) and path= (file exists). A closed port blocks done. For any other non-git artifact (a command that must exit 0), the `.team/done-extra` seam already runs it as part of done. | CHECK | scripts/done-check |
 
 ---
 
@@ -101,7 +110,6 @@ This register hardens against the failures THIS project hit. It is blind to fail
 never encountered, and a future team will hit some of those. Known gaps this kit does NOT yet remove,
 and should grow to cover as real usage surfaces them:
 
-- **Cost/token blowout**: no mechanism here caps or budgets agent spend. Needs a CHECK.
 - **Agents agreeing on a wrong answer** (correlated error, a gate rubber-stamping a real hole): the
   gate model assumes independent lenses, but two agents can share a blind spot. Needs adversarial
   review prompts and, ideally, a check that a gate actually exercised the artifact, not just read it.

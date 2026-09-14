@@ -9,7 +9,7 @@
       "name": "reliable-agent-team",
       "source": "./",
       "description": "Enforcement kit for running an agent team reliably: worktree isolation, claim ledger, SHA-bound gates, a done-check, and a read-and-warn per-session version check.",
-      "version": "0.2.3"
+      "version": "0.3.0"
     }
   ]
 }

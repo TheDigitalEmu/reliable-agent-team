@@ -61,9 +61,9 @@ real artifact, not a claim; the producer never signs off its own work (if the on
 human or a different model, that IS the reviewer); a scheduled reconcile so a pause advances instead of
 dying; never weaken a check to go green. A non-Claude-Code host adopts the shape and writes its own
 thin checks against its real artifacts (a file exists, a service answers, a command exits 0); it does
-not install this plugin as-is. Two named gaps remain unbuilt and are live for any metered host: a cost
-or spend CHECK, and a done-check that verifies non-git artifacts (see the Limits in
-`ROADBLOCK-REGISTER.md`).
+not install this plugin as-is. Two primitives a non-git or metered host needs are shipped and
+portable: `scripts/cost-check` (a spend ceiling you feed the host's usage number to) and done-check's
+`port=` artifact (proves a live service actually answers, not just that code was committed).
 
 ## The core / profile split
 Everything in this kit is written to be project-agnostic (the CORE). Any project's specifics (its

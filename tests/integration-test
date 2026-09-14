@@ -524,6 +524,52 @@ else
 	bad "EO left a directory behind after declining"
 fi
 
+# ---------------------------------------------------------------- COST (spend ceiling)
+# cost-check must: pass under budget (0), warn near it (0), block at/over it (1), and
+# fail closed when spend is unreadable and --on-missing is the default block (2).
+COST="$KIT_DIR/scripts/cost-check"
+if sh "$COST" --budget 20 --spend 5 >/dev/null 2>&1; then
+	ok "COST under budget passes (exit 0)"
+else
+	bad "COST under budget did not pass"
+fi
+if sh "$COST" --budget 20 --spend 17 >/dev/null 2>&1; then
+	ok "COST warn zone still passes (exit 0)"
+else
+	bad "COST warn zone wrongly blocked"
+fi
+if sh "$COST" --budget 20 --spend 25 >/dev/null 2>&1; then
+	bad "COST over budget did NOT block (should exit 1)"
+else
+	ok "COST over budget blocks (exit non-zero)"
+fi
+set +e; sh "$COST" --budget 20 >/dev/null 2>&1; crc=$?; set -e
+if [ "$crc" -eq 2 ]; then
+	ok "COST unreadable spend fails closed by default (exit 2)"
+else
+	bad "COST unreadable spend did not fail closed (rc=$crc)"
+fi
+if sh "$COST" --budget 100 --spend-cmd 'echo 42' >/dev/null 2>&1; then
+	ok "COST reads spend from --spend-cmd"
+else
+	bad "COST --spend-cmd source did not work"
+fi
+
+# ---------------------------------------------------------------- DCPORT (done-check port artifact)
+# The port= artifact proves a live service answers, the non-HTTP/non-git artifact.
+# A port with nothing listening must BLOCK the artifact gate (no false done).
+setup_repo dcport
+echo x > p.txt; git_quiet add p.txt; git_quiet commit -m "svc"
+# pick a port almost certainly closed; assert done-check blocks on it
+set +e
+DCP_OUT="$(sh "$KIT_DIR/scripts/done-check" --task T --no-gate --port 59997 2>&1)"
+set -e
+if printf '%s' "$DCP_OUT" | grep -q 'BLOCK ARTIFACT' && printf '%s' "$DCP_OUT" | grep -qi 'nothing answering'; then
+	ok "DCPORT a closed port blocks the artifact gate (no false done)"
+else
+	bad "DCPORT closed port did not block the artifact gate"
+fi
+
 # ---------------------------------------------------------------- VCONS (version consistency)
 # VERSION and the packaging manifests must agree. This guards the drift Bob caught
 # (plugin.json / marketplace.json left at an old version after a VERSION bump).

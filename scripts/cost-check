@@ -1,0 +1,118 @@
+#!/bin/sh
+# ============================================================================
+# cost-check : block or warn when spend crosses a declared ceiling.
+# ----------------------------------------------------------------------------
+# ROADBLOCK REMOVED (a named gap in ROADBLOCK-REGISTER Limits): "cost/token
+# blowout, no mechanism caps or budgets agent spend". A manager plus specialists
+# plus a reconcile timer is a cost amplifier with no cap. This is the CHECK.
+#
+# WHY IT IS SHAPED THIS WAY
+#   The kit cannot meter tokens or dollars itself; that number lives in the host
+#   (the API dashboard, the appliance's usage meter, a CI budget). So this follows
+#   the same seam pattern as done-extra: the KIT supplies the gate and the RULE,
+#   the ENVIRONMENT supplies the current spend. You give it a ceiling and a way to
+#   read the current spend; it compares and acts. No spend source, and it says so
+#   and fails according to --on-missing (default: block, because an uncapped run
+#   is exactly the failure this removes).
+#
+# HOW SPEND IS READ (first one present wins)
+#   --spend <number>        pass the current spend directly.
+#   --spend-cmd <command>   a command whose stdout is the current spend number.
+#   TEAM_SPEND (env)        the current spend number.
+#   TEAM_SPEND_CMD (env)    a command whose stdout is the current spend number.
+#   The number is a bare count in whatever unit the ceiling is in (dollars, tokens,
+#   credits). Unit is the caller's choice; the check only compares magnitudes.
+#
+# THE CEILING AND THE WARN LINE
+#   --budget <number>       the hard ceiling (required). At or over it -> BLOCK.
+#   --warn-at <percent>     warn (not block) at this percent of budget (default 80).
+#
+# EXIT CODES
+#   0  under budget (a warning may still print if past the warn line). OK to proceed.
+#   1  at or over budget. BLOCK. Stop spawning work until the owner raises the cap.
+#   2  usage error, or spend could not be read and --on-missing=block (the default).
+#
+# WIRING
+#   Run it before a reconcile timer re-drives work, and as a .team/done-extra line
+#   so a task cannot complete while the run is already over budget:
+#     sh scripts/cost-check --budget 20 --spend-cmd 'my-usage-reader'
+# ============================================================================
+
+set -eu
+PROG="$(basename "$0")"
+
+BUDGET=""
+WARN_AT="80"
+SPEND=""
+SPEND_CMD=""
+ON_MISSING="block"   # block | warn | pass
+
+die() { code="$1"; shift; printf '%s: %s\n' "$PROG" "$*" >&2; exit "$code"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help)      sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --budget)       BUDGET="${2:-}"; shift 2 ;;
+    --warn-at)      WARN_AT="${2:-}"; shift 2 ;;
+    --spend)        SPEND="${2:-}"; shift 2 ;;
+    --spend-cmd)    SPEND_CMD="${2:-}"; shift 2 ;;
+    --on-missing)   ON_MISSING="${2:-}"; shift 2 ;;
+    *) die 2 "unknown argument: $1 (try --help)" ;;
+  esac
+done
+
+[ -n "$BUDGET" ] || die 2 "missing --budget <number> (the hard ceiling)"
+
+# numeric guard: integers or decimals only.
+is_num() { case "$1" in ''|*[!0-9.]*) return 1 ;; *) return 0 ;; esac; }
+is_num "$BUDGET" || die 2 "budget must be a number: $BUDGET"
+is_num "$WARN_AT" || die 2 "warn-at must be a number: $WARN_AT"
+
+# Resolve current spend from the first available source.
+[ -n "$SPEND" ] || SPEND="${TEAM_SPEND:-}"
+if [ -z "$SPEND" ]; then
+  RUN_CMD="$SPEND_CMD"
+  [ -n "$RUN_CMD" ] || RUN_CMD="${TEAM_SPEND_CMD:-}"
+  if [ -n "$RUN_CMD" ]; then
+    set +e
+    SPEND="$(sh -c "$RUN_CMD" 2>/dev/null | tr -d ' \t\r\n')"
+    set -e
+  fi
+fi
+
+if [ -z "$SPEND" ] || ! is_num "$SPEND"; then
+  case "$ON_MISSING" in
+    pass) printf '%s: no spend source; --on-missing=pass, proceeding UNCAPPED.\n' "$PROG" >&2; exit 0 ;;
+    warn) printf '%s: WARN no readable spend; running UNCAPPED. Wire --spend-cmd or TEAM_SPEND_CMD.\n' "$PROG" >&2; exit 0 ;;
+    *)    printf '%s: BLOCK no readable spend and --on-missing=block. An uncapped run is the failure this check removes.\n' "$PROG" >&2
+          printf '  Provide --spend/--spend-cmd or TEAM_SPEND/TEAM_SPEND_CMD, or set --on-missing=warn to allow it explicitly.\n' "$PROG" >&2
+          exit 2 ;;
+  esac
+fi
+
+# Compare using awk (handles decimals; POSIX sh has no float math).
+VERDICT="$(awk -v s="$SPEND" -v b="$BUDGET" -v w="$WARN_AT" 'BEGIN{
+  if (b <= 0) { print "baderr"; exit }
+  pct = (s / b) * 100
+  if (s >= b) { printf "block %.1f", pct }
+  else if (pct >= w) { printf "warn %.1f", pct }
+  else { printf "ok %.1f", pct }
+}')"
+
+STATE="${VERDICT%% *}"; PCT="${VERDICT##* }"
+
+case "$STATE" in
+  block)
+    printf '%s: BLOCK spend %s is at or over budget %s (%.0f%%). Stop spawning work; raise the cap or wind down.\n' \
+      "$PROG" "$SPEND" "$BUDGET" "$PCT" >&2
+    exit 1 ;;
+  warn)
+    printf '%s: WARN spend %s is %s%% of budget %s (warn at %s%%). Approaching the cap.\n' \
+      "$PROG" "$SPEND" "$PCT" "$BUDGET" "$WARN_AT"
+    exit 0 ;;
+  ok)
+    printf '%s: OK spend %s is %s%% of budget %s.\n' "$PROG" "$SPEND" "$PCT" "$BUDGET"
+    exit 0 ;;
+  *)
+    die 2 "budget must be greater than zero" ;;
+esac

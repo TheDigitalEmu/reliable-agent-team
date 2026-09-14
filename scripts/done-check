@@ -71,6 +71,8 @@
 #     artifact  yes if this task ships a live/visual artifact that must be re-fetched
 #     url       a URL that must return HTTP 200 (satisfies artifact)
 #     path      a file that must exist, e.g. a screenshot (satisfies artifact)
+#     port      a live service must answer, "PORT" or "HOST:PORT" (satisfies artifact);
+#               proves a running service is up, the non-HTTP artifact git cannot see
 #     sha       the commit the gates are bound to (defaults to current HEAD)
 #
 #   Example board line (illustrative placeholder):
@@ -83,7 +85,7 @@
 # USAGE
 #   done-check --task <task-id> [--branch <branch>] [--tasks <path>] [--ledger <path>]
 #              [--class <change-class>] [--author <work-author>]
-#              [--url <http-url>] [--path <artifact-path>] [--sha <commit>]
+#              [--url <http-url>] [--path <artifact-path>] [--port <port|host:port>] [--sha <commit>]
 #              [--done-extra <path>] [--no-gate] [--no-artifact] [--no-extra]
 #   done-check -h | --help
 #
@@ -124,6 +126,7 @@ CLASS=""
 AUTHOR=""
 URL=""
 ART_PATH=""
+PORT=""
 SHA=""
 DONE_EXTRA=""
 DO_GATE=1
@@ -141,6 +144,7 @@ while [ $# -gt 0 ]; do
     --author)      AUTHOR="${2:-}"; shift 2 ;;
     --url)         URL="${2:-}"; shift 2 ;;
     --path)        ART_PATH="${2:-}"; shift 2 ;;
+    --port)        PORT="${2:-}"; shift 2 ;;
     --sha)         SHA="${2:-}"; shift 2 ;;
     --done-extra)  DONE_EXTRA="${2:-}"; shift 2 ;;
     --no-gate)     DO_GATE=0; shift ;;
@@ -175,6 +179,7 @@ if [ -z "$TASKS" ] && [ -f ".team/TASKS.md" ]; then TASKS=".team/TASKS.md"; fi
 [ -n "$AUTHOR" ]   || AUTHOR="$(field_from_board author || true)"
 [ -n "$URL" ]      || URL="$(field_from_board url || true)"
 [ -n "$ART_PATH" ] || ART_PATH="$(field_from_board path || true)"
+[ -n "$PORT" ]     || PORT="$(field_from_board port || true)"
 [ -n "$SHA" ]      || SHA="$(field_from_board sha || true)"
 ART_FLAG="$(field_from_board artifact || true)"
 
@@ -242,6 +247,7 @@ if [ "$DO_ART" -eq 1 ]; then
   case "$ART_FLAG" in yes|YES|true|1) ART_REQUIRED=1 ;; esac
   [ -n "$URL" ] && ART_REQUIRED=1
   [ -n "$ART_PATH" ] && ART_REQUIRED=1
+  [ -n "$PORT" ] && ART_REQUIRED=1
 fi
 
 if [ "$ART_REQUIRED" -eq 1 ]; then
@@ -269,8 +275,29 @@ if [ "$ART_REQUIRED" -eq 1 ]; then
       printf '  ..    ARTIFACT: curl not available to verify %s\n' "$URL"
     fi
   fi
+  # Port check (a live local service answers) if not already satisfied and a port is present.
+  # Accepts "port" or "host:port"; default host 127.0.0.1. Proves a running service is
+  # actually up, the non-HTTP artifact a git check can never see.
+  if [ "$ART_OK" -eq 0 ] && [ -n "$PORT" ]; then
+    P_HOST="127.0.0.1"; P_PORT="$PORT"
+    case "$PORT" in *:*) P_HOST="${PORT%:*}"; P_PORT="${PORT##*:}" ;; esac
+    PORT_OK=0
+    if command -v nc >/dev/null 2>&1; then
+      nc -z -w 2 "$P_HOST" "$P_PORT" >/dev/null 2>&1 && PORT_OK=1
+    fi
+    # Fallback: /dev/tcp in a bounded subshell (bash/ksh); harmless if unsupported.
+    if [ "$PORT_OK" -eq 0 ]; then
+      if ( exec 3<>"/dev/tcp/$P_HOST/$P_PORT" ) >/dev/null 2>&1; then PORT_OK=1; fi
+    fi
+    if [ "$PORT_OK" -eq 1 ]; then
+      printf '  OK    ARTIFACT: service answers on %s:%s\n' "$P_HOST" "$P_PORT"
+      ART_OK=1
+    else
+      printf '  ..    ARTIFACT: nothing answering on %s:%s\n' "$P_HOST" "$P_PORT"
+    fi
+  fi
   if [ "$ART_OK" -eq 0 ]; then
-    printf '  BLOCK ARTIFACT: no verified artifact (need a URL returning 200 OR an existing path)\n'
+    printf '  BLOCK ARTIFACT: no verified artifact (need a URL returning 200, an existing path, OR a live port)\n'
     printf '        roadblock: first-pass output accepted without an artifact (F1). No artifact, no done.\n'
     FAILED=1
   fi
