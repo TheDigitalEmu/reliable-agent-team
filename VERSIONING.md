@@ -76,3 +76,8 @@ sitting on main, and none of those needed to arrive sooner.
 
 Edit the first line of `VERSION`, commit, push to main. main is the release line.
 Only the first non-comment line of `VERSION` is read; the `#` lines are ignored.
+
+The kit version is declared in three places that MUST agree: `VERSION` (the
+authority), `.claude-plugin/plugin.json`, and `.claude-plugin/marketplace.json`.
+Bump all three together. `scripts/version-consistency-check` enforces this and is
+run by the integration suite; a disagreement fails the suite.

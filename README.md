@@ -51,6 +51,20 @@ and its security conditions are recorded in `agentic-discussion/DECISIONS.md` (D
 rows of `ROADBLOCK-REGISTER.md`. When a change bumps `VERSION` (and so tells the wild to pull) is
 defined in `VERSIONING.md`. Why any of this care is warranted, read `WHY-KAREN.md`.
 
+## Portability (what this ships for, and what it does not)
+The packaging is Claude Code specific: a plugin, a SessionStart hook, and a clone into
+`~/.claude/skills/`. The strongest guards are git lifecycle (a pre-commit claim hook, a pre-push
+SHA-bound gate), so they only bite work that flows through git commits and pushes. On a host without
+that lifecycle, or a different agent runtime, those hooks never fire and that work is ungated. What is
+portable is the SHAPE, not this packaging: in-repo worktrees only; "done" is a script's exit against a
+real artifact, not a claim; the producer never signs off its own work (if the only second party is a
+human or a different model, that IS the reviewer); a scheduled reconcile so a pause advances instead of
+dying; never weaken a check to go green. A non-Claude-Code host adopts the shape and writes its own
+thin checks against its real artifacts (a file exists, a service answers, a command exits 0); it does
+not install this plugin as-is. Two named gaps remain unbuilt and are live for any metered host: a cost
+or spend CHECK, and a done-check that verifies non-git artifacts (see the Limits in
+`ROADBLOCK-REGISTER.md`).
+
 ## The core / profile split
 Everything in this kit is written to be project-agnostic (the CORE). Any project's specifics (its
 language, framework, host, security controls, gate commands, and any project-only hooks) live in a

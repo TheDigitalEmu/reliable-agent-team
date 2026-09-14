@@ -59,10 +59,16 @@ set. Pick the class honestly; under-classing skips a gate you needed.
 
 ## The security gate is real only with owasp-advisor
 
-The `security` gate means a second party attacked the surface with the
-owasp-advisor skill and logged a PASS. Without that skill it is a hollow checkbox.
+The `security` gate means a second party reviewed the code against OWASP
+standards with the owasp-advisor skill and logged a PASS. That skill is a
+read-only review protocol: it reads code and produces a scored, evidence-backed
+report. It does NOT run the target, send traffic, fuzz, or exploit. It is not a
+penetration test. Without the skill the gate is a hollow checkbox.
 `enforcement/ensure-owasp` (run at install) makes the skill present. If it is
-missing, do not treat a security PASS as real.
+missing, do not treat a security PASS as real. And note the honest limit: if the
+reviewer is another turn of the same model that produced the code, that is not an
+independent lens (see ROADBLOCK-REGISTER Limits). For anything critical, the
+independent check is a human or a different model.
 
 ## The rules you and the manager hold (the machinery backs these, it is not all of them)
 

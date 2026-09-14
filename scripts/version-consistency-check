@@ -1,0 +1,65 @@
+#!/bin/sh
+# ============================================================================
+# version-consistency-check : the kit's version is declared in more than one
+# file; they must agree. A disagreement means a prior bump was left incomplete
+# and the self-update signal (VERSION) no longer matches the packaging.
+# ----------------------------------------------------------------------------
+# THE RULE
+#   The authoritative version is the first non-comment line of VERSION. Every
+#   other place that states the kit version must equal it:
+#     - .claude-plugin/plugin.json      "version"
+#     - .claude-plugin/marketplace.json  the plugin entry "version"
+#   This is the mechanical proxy for the versioning policy (see VERSIONING.md):
+#   a bump edits VERSION, and these packaging surfaces must be bumped with it.
+#
+# EXIT CODES
+#   0  all declared versions agree with VERSION. PASS.
+#   1  a mismatch. FAIL; the offending file and value are printed.
+#   2  environment error (a required file missing or unreadable).
+# ============================================================================
+
+set -eu
+PROG="$(basename "$0")"
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+KIT_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
+cd "$KIT_DIR" || { printf '%s: cannot cd to kit dir\n' "$PROG" >&2; exit 2; }
+
+[ -f VERSION ] || { printf '%s: VERSION file missing\n' "$PROG" >&2; exit 2; }
+
+# Authoritative token: first non-blank, non-comment line, whitespace stripped.
+AUTH="$(awk 'NF { l=$0; sub(/^[ \t\r]+/,"",l); if (substr(l,1,1) != "#") { print l; exit } }' VERSION | tr -d ' \t\r\n')"
+[ -n "$AUTH" ] || { printf '%s: VERSION has no version token\n' "$PROG" >&2; exit 2; }
+
+FAIL=0
+
+# Pull the first "version": "x.y.z" value from a json file.
+json_version() {
+	[ -f "$1" ] || { printf ''; return; }
+	grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$1" | head -1 \
+		| sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
+}
+
+check() {
+	name="$1"; got="$2"
+	if [ -z "$got" ]; then
+		printf '%s: %s has no version field to check\n' "$PROG" "$name" >&2
+		FAIL=1
+		return
+	fi
+	if [ "$got" != "$AUTH" ]; then
+		printf '%s: MISMATCH %s = %s, expected %s (from VERSION)\n' "$PROG" "$name" "$got" "$AUTH" >&2
+		FAIL=1
+	fi
+}
+
+check ".claude-plugin/plugin.json"      "$(json_version .claude-plugin/plugin.json)"
+check ".claude-plugin/marketplace.json" "$(json_version .claude-plugin/marketplace.json)"
+
+if [ "$FAIL" -ne 0 ]; then
+	printf '%s: FAIL. Version surfaces disagree with VERSION (%s).\n' "$PROG" "$AUTH" >&2
+	exit 1
+fi
+
+printf '%s: PASS. all version surfaces agree (%s).\n' "$PROG" "$AUTH"
+exit 0

@@ -524,6 +524,16 @@ else
 	bad "EO left a directory behind after declining"
 fi
 
+# ---------------------------------------------------------------- VCONS (version consistency)
+# VERSION and the packaging manifests must agree. This guards the drift Bob caught
+# (plugin.json / marketplace.json left at an old version after a VERSION bump).
+VCON="$KIT_DIR/scripts/version-consistency-check"
+if sh "$VCON" >/dev/null 2>&1; then
+	ok "VCONS all version surfaces agree with VERSION"
+else
+	bad "VCONS version surfaces disagree with VERSION (run scripts/version-consistency-check)"
+fi
+
 # ---------------------------------------------------------------- verdict
 printf '\nintegration-test: %d passed, %d failed\n' "$PASS_N" "$FAIL_N"
 [ "$FAIL_N" -eq 0 ] || exit 1
