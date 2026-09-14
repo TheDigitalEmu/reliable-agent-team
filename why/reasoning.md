@@ -1,16 +1,13 @@
 # Why the mechanisms are shaped this way
 
-The full argument was made in the origin project's team playbook (not shipped in this repo). This
-kit is the ENFORCEMENT layer that installs what that playbook argued for: the playbook made the case,
-the machinery makes the case unforgettable. This file carries the one-paragraph WHY per theme so the
+This kit is the ENFORCEMENT layer: a longer-form argument sits behind each of these rules, but the
+machinery is what makes the argument unforgettable. This file carries the one-paragraph WHY per theme so the
 reasoning travels with the kit. Humans read this file; the hooks and scripts do not need it.
 
 Every roadblock and its mechanism is in `../ROADBLOCK-REGISTER.md`. Below is the one-paragraph WHY per
-theme. The `-> playbook chNN` tags are provenance: they name the chapter of the origin project's
-playbook that argued each point in full. That playbook is not shipped here, so treat the paragraph
-below as the self-contained reason; the tag is only a breadcrumb to where the long-form case was made.
+theme. Each is self-contained; read the register for the mechanism, this for the shape.
 
-## Verification (the dominant theme) -> playbook ch05, ch02
+## Verification (the dominant theme)
 Why "done" is a script's exit code and not an agent's judgment: an agent reports with a confidence
 uncorrelated to correctness. It says "the page is done" in the same even tone whether it loaded the
 page or remembered building it. You cannot read truth off the delivery, so the only reliable signal is
@@ -20,7 +17,7 @@ why a UI task with no captured artifact cannot pass. "Built" is not "done", "pus
 "passed once" is not "still passing", because each is a place the project rounded up and shipped
 something broken.
 
-## The gate model (independent lenses, producer never signs off) -> playbook ch04, ch01
+## The gate model (independent lenses, producer never signs off)
 Why three separate agents and not one careful reviewer: the defect lives in what the author's vantage
 point cannot see, and one agent wearing all three hats does the one it finds easiest and waves the
 other two through. The mega-menu round is the proof: reviewer PASSED reading the code, security PASSED
@@ -30,7 +27,7 @@ the check; for an agent team it IS the check, because there is no reputation to 
 a self-check softly. Hence producer-never-signs-off as an absolute rule the gate-check enforces
 mechanically, and hence a PASS bound to a commit so adding to a gated tip re-requires the gate.
 
-## Change-class -> playbook ch04
+## Change-class
 Why gate cost matches blast radius: not everything needs all three lenses, and forcing them wastes
 cycles that then get skipped. Auth/data/input can leak or be abused, so it needs all three. Inert
 content has no attack surface and no runtime behaviour, so reviewer alone suffices. Presentational UI
@@ -38,7 +35,7 @@ has runtime behaviour but no data path, so reviewer plus qa. Encoding this as a 
 carries and the gate-check reads means the RIGHT gates run, mechanically, rather than on the manager
 remembering the rule.
 
-## Coordination (worktrees + claim ledger) -> playbook ch03
+## Coordination (worktrees + claim ledger)
 Why physical isolation and not a "please coordinate" instruction: two sessions shared one checkout,
 one branch-switched it mid-run, and another session's untracked work was wiped with NO git record and
 no error. The damage was silent, so attention cannot catch it: a careful session can destroy another's
@@ -46,9 +43,9 @@ work without any signal it did so. One worktree per session makes the wipe physi
 claim ledger, read on wake and written before any touch, stops two sessions doing conflicting logical
 work on the same files. Commit-and-push is the merge discipline because committed work is on the
 remote, recoverable, and visible, and the wiped files were untracked. This is the headline scar of the
-whole engagement, learned by destroying the team's own work first.
+whole experience, learned by destroying the team's own work first.
 
-## Content and sourcing -> playbook ch05, ch02
+## Content and sourcing
 Why no-fabrication, cleared-asset-use, breadth, and inspect-and-reject are executable defaults: a
 developer inventing facts is how wrong data reaches production, so facts are sourced by a separate role
 with a URL and a checked-date each. Withholding assets the owner already cleared wastes cleared work,
@@ -57,7 +54,7 @@ so "use and list" is the default, not "ask again". Over-relying on one or two co
 dominance is a red flag. The instinct to bank is the agent that inspected image candidates and
 rejected four as AI-generated, documenting why: more work to ship less, which is exactly the standard.
 
-## Communication and memory -> playbook ch06, ch07
+## Communication and memory
 Why the standing-authorization record and the required failure ledger: re-asking permission for an
 action the owner already ordered ("build it and email me when ready", then stopping to ask "should I
 deploy?") wastes the owner's attention and trains them that they cannot walk away, defeating the
@@ -66,7 +63,7 @@ re-asking. And the retrospective is required from day one because most rules exi
 something broke; a team with no failure ledger re-earns every scar. The self-test fails without the
 ledger so the enforcement, not memory, keeps it present.
 
-## The honest limit -> the register's Limits section
+## The honest limit (see the register's Limits section)
 This kit hardens against the failures THIS project hit (n equals 1). It is blind to modes the project
 never encountered. Known gaps not yet removed: cost/token blowout, correlated error (two gates sharing
 a blind spot), a gate passing a genuine defect, and prompt-injection. Reliability is a rate driven down

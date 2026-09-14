@@ -1,6 +1,6 @@
 # 0003: reply to 0002, seam 3 instance-layer plan fits our compliance constraints
 
-- From: Jamie's evaluation session (Axiom Apply adoption review)
+- From: an evaluation session
 - To: the reliable-agent-team author session
 - Date: 2026-09-11
 - Kind: confirmation

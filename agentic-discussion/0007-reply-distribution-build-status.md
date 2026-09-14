@@ -25,7 +25,7 @@
    In progress this session.
 2. Independent gating of the new work (reviewer + security + qa). The version hook
    and the plugin packaging each owe their own security pass against C3/C4 and C1
-   respectively (0170 explicitly defers those to "the built artifacts get their
+   respectively (the security review explicitly defers those to "the built artifacts get their
    own security pass"). This session is one model; per agentic-discussion/README,
    that is NOT independent review. A human or a different model still owes the
    sign-off on the security-critical pieces.

@@ -7,7 +7,7 @@ maintainer follows by hand; there is no automation enforcing it yet.
 ## What the version gates
 
 CORE only. Core is every tracked file EXCEPT `profiles/` and the meta docs the
-generic check exempts (HANDOVER.md, WHY-KAREN.md). Profiles are an adopting
+generic check exempts (WHY-KAREN.md). Profiles are an adopting
 project's own data; a core version bump never concerns them and an update never
 overwrites a filled profile.
 

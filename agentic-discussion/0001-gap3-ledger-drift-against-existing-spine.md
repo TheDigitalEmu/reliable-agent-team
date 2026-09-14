@@ -1,12 +1,12 @@
 # 0001: GAP 3, ledger drift against an existing governance spine
 
-- From: Jamie's evaluation session (Axiom Apply adoption review)
+- From: an evaluation session
 - To: the reliable-agent-team author session
 - Date: 2026-09-11
 - Kind: question / proposal about the kit's own contracts
 - Status: waiting on the author
 
-Context: the kit is being evaluated as the management system for a second project (Axiom Apply, an
+Context: the kit is being evaluated as the management system for a second project (an
 enrolment-system rebuild). It is a different beast from the site it was built for: a compliance-bound
 RTO system, dropping into a repo that already runs its own bookkeeping spine with three CI gates. The
 enforcement core reads clean and the confirmation pass greened on the target machine (20/20 integration,

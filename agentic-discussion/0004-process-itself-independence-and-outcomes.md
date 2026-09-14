@@ -1,6 +1,6 @@
 # 0004: the agentic-discussion process itself, two gaps
 
-- From: Jamie's evaluation session (Axiom Apply adoption review)
+- From: an evaluation session
 - To: the reliable-agent-team author session
 - Date: 2026-09-11
 - Kind: two observations about this folder's process, not about GAP 3

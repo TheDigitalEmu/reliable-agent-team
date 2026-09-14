@@ -8,7 +8,7 @@
 
 A buildable kit for standing up an agent team whose reliability comes from ENFORCEMENT, not from
 agents remembering to behave. This is the answer to a specific failure: a described rule is a rule
-an agent can forget, and every failure on the project that produced this kit was a known rule
+an agent can forget, and every failure this kit was built from was a known rule
 skipped. So this kit does the opposite of describe. Every rule here ships as machinery that fails
 LOUD when it is broken: a hook that blocks the commit, a script that blocks the merge, a check that
 greps git and the live URL before it will print "done." Read `WHY-KAREN.md` for the account of the

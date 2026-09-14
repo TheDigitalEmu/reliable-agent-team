@@ -51,7 +51,7 @@ Every hand-off carries a `change_class` field. It decides the gate set:
 ## 4. Coordination protocol (physical isolation plus a claim ledger)
 - One git worktree per session, created INSIDE the repo at `.worktrees/<session>` (gitignored), never
   in the parent root. Worktrees in the parent (`../<repo>-x`) spread stray folders across the owner's
-  filesystem (a real incident on the source project) and are forbidden. Remove each worktree and kill
+  filesystem (a real incident this kit was built from) and are forbidden. Remove each worktree and kill
   its dev server the moment its job ends. The main checkout stays on the integration branch as
   reference. Never run feature work in a shared checkout while another session is alive in it.
 - Never move a shared checkout's branch (checkout, switch, reset, stash, rebase) while another
@@ -88,7 +88,7 @@ Every hand-off carries a `change_class` field. It decides the gate set:
   Maintain an in-use / rejected asset list; the review prompt checks the list exists.
 - Inspect and reject slop. Visually inspect candidate assets; reject and document AI-generated or
   off-standard ones rather than shipping them quietly.
-- LOOK at what an asset DEPICTS before using it (F18, the most damaging failure on the source
+- LOOK at what an asset DEPICTS before using it (F18, the most damaging failure on one real
   project). "Loads 200" is not "is correct". Before any media goes live, someone views it and
   confirms it shows the RIGHT subject: the correct entity, the correct person, the correct category
   (right sport/discipline), and misrepresents no one. Prefer OWN-SOURCE assets (an entity's own

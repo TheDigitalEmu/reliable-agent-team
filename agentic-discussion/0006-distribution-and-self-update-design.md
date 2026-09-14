@@ -9,12 +9,10 @@
 ## Why this thread exists
 
 The single most important thing the owner (Emu) asked for, a public kit that
-projects can pull and that tells them when they are behind, was never written
-down as a decision in THIS repo. It lived only in the origin project's repo
-history (SPLIT-SPEC.md, security handoff 0170) and in the outgoing session's prose
-handover. The prior manager ("Karen") left it as a vague "not done" note and
-punted the product shape to the owner. Leaving intent as folklore is the exact
-failure this kit exists to stop. This thread pins it down where the work lives.
+projects can pull and that tells them when they are behind, had not been written
+down as a decision in this repo. It existed only as an earlier design intent and
+prose notes. Leaving intent as folklore is the exact failure this kit exists to
+stop. This thread pins it down where the work lives.
 
 ## The intent, in the owner's words (plain)
 
@@ -35,10 +33,9 @@ reality. Do not promise per-run.
 ## The decided shape (settled, not re-litigated)
 
 Delivery = a PLUGIN that carries the payload, plus a SessionStart hook that does
-the per-session version check. This was already decided in security handoff 0170
-(line 13: "Delivery mechanism (plugin payload plus SessionStart per-session
-human-approved apply) is already decided"). The open skill-vs-plugin-vs-hook
-question in SPLIT-SPEC section 4 is therefore closed: it is plugin + hook.
+the per-session version check. The security review settled this: a plugin payload
+plus a per-session, human-approved apply. The open skill-vs-plugin-vs-hook
+delivery-mechanism question is therefore closed: it is plugin + hook.
 
 ## The version-check mechanism
 
@@ -57,7 +54,7 @@ question in SPLIT-SPEC section 4 is therefore closed: it is plugin + hook.
 6. Profiles are the adopting project's data. An update refreshes core only and
    never overwrites a filled profile.
 
-## Security conditions (from handoff 0170, these are BUILD REQUIREMENTS)
+## Security conditions (from the kit's security review, these are BUILD REQUIREMENTS)
 
 - C1: shipped profiles' gate commands must be inspection-only, local, read-only.
   No network egress, no writes outside the repo, no fetch-piped-to-shell.
@@ -73,9 +70,9 @@ question in SPLIT-SPEC section 4 is therefore closed: it is plugin + hook.
 - C6: header note on moved guard scripts (adding fetch/write makes them a
   code-execution surface).
 
-## Source of record (do not re-derive from memory)
+## Source of record
 
-- Origin project repo: reliable-agent-team/SPLIT-SPEC.md (core/profile boundary).
-- Origin project repo: the security handoff 0170 (the trust model and C1 to C6).
-- Origin project repo: reliable-agent-team/WHAT-IS-NOT-DONE.md (the outgoing
-  confession and build brief).
+The core/profile boundary, the trust model, and the six security conditions
+(C1 to C6) that shaped this design were settled during the kit's development.
+They are captured here and in the distribution rows of ROADBLOCK-REGISTER.md, so
+this decision is self-contained and does not depend on any external document.

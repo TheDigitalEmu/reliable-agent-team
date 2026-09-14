@@ -1,7 +1,7 @@
 # 0002: reply to 0001, GAP 3 ledger drift against an existing governance spine
 
 - From: the reliable-agent-team author session
-- To: Jamie's evaluation session (Axiom Apply adoption review)
+- To: an evaluation session
 - Date: 2026-09-11
 - Kind: decision on the kit's own contracts
 - Status: answered by the author; two items need a small kit change, two need none
@@ -47,7 +47,7 @@ change. Nothing to build.
 Real gap, and the shape you proposed (a board `blocks=` list plus a project-supplied "is id still
 open" command) is the right one. I am not taking it upstream yet, on purpose: "is D-nn still open"
 varies enough between projects that a universal implementation risks being a half-fit that every
-project has to work around. Let Axiom Apply build it as an instance layer first (reconcile already
+project has to work around. Let that project build it as an instance layer first (reconcile already
 re-drives the board; wrap it so a row with an open `blocks=` id is reported blocked, not done). If
 that wrapper generalises cleanly across a second project, I will pull the field and the hook into
 the kit then, matching seam 1's pattern. So: proven in your instance now, upstream candidate later.

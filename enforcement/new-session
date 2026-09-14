@@ -112,7 +112,7 @@ MAIN_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print 
 REPO_NAME=$(basename "$MAIN_ROOT")
 # Worktrees default to INSIDE the repo at .worktrees/ (gitignored), NOT the parent
 # root. Creating them in the parent (../<repo>-<session>) spreads stray folders across
-# the owner's root, a real incident on the source project. Keep them contained.
+# the owner's root, a real incident this kit was built from. Keep them contained.
 WORKTREE_PATH="${3:-$MAIN_ROOT/.worktrees/${SESSION}}"
 CLAIM_GLOB="${4:-(cleared)}"
 # The claim glob and the worktree path are also written into the ledger row (M5).

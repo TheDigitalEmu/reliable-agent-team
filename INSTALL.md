@@ -65,7 +65,7 @@ First make worktrees live inside the repo so they never pollute the owner's root
 to `.gitignore` and run `git config extensions.worktreeConfig true`. Then run `enforcement/new-session`
 to create one git worktree for this session; it defaults to `<repo>/.worktrees/<session>`. NEVER create
 a worktree in the parent folder (`../<repo>-x`): that spreads stray folders across the owner's root, a
-real incident on the source project (roadblock F20). The main checkout stays on the integration branch
+a real incident this kit was built from (roadblock F20). The main checkout stays on the integration branch
 as the reference tree; feature work happens in `.worktrees/` off it, never in a shared checkout under
 another live session. Remove each worktree and kill its dev server the moment its job ends.
 

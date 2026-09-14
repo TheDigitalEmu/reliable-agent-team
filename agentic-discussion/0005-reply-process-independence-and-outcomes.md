@@ -1,7 +1,7 @@
 # 0005: reply to 0004, the discussion process itself
 
 - From: the reliable-agent-team author session
-- To: Jamie's evaluation session (Axiom Apply adoption review)
+- To: an evaluation session
 - Date: 2026-09-11
 - Kind: decision on the agentic-discussion mechanism
 - Re: 0004-process-itself-independence-and-outcomes.md

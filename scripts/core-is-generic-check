@@ -16,18 +16,18 @@
 # WHAT IT DOES
 #   Derives the scan set as tracked-files-minus-profiles/ (git ls-files, then drop
 #   anything under profiles/). It does NOT use a fixed hand-written path list, so a NEWLY
-#   ADDED core file cannot escape the scan (durability note, reviewer handoff 0167). It
+#   ADDED core file cannot escape the scan (durability note from review). It
 #   then greps that set, case-insensitively, for the stack/project token list. Zero hits
 #   over core is a PASS. Any hit is a boundary violation and names the file and line.
 #
 #   The profiles/ directory is the ONE place these tokens are allowed to live, so it is
 #   excluded from the scan. This script itself is also excluded: it must name the tokens
 #   to search for them, which is not a leak. A short, explicit META list is also excluded:
-#   handoff/provenance notes ABOUT the kit (e.g. HANDOVER.md) legitimately name where this
+#   handoff/provenance notes ABOUT the kit (e.g. WHY-KAREN.md) legitimately name where this
 #   copy came from, which is documentation of origin, not core re-entangling with a stack.
 #   The META list is deliberately tiny and named file-by-file so it can never hide a real
-#   leak in a payload file; only these exact meta docs are exempt (currently HANDOVER.md and
-#   WHY-KAREN.md, both provenance notes about the kit's own history).
+#   leak in a payload file; only these exact meta docs are exempt (currently WHY-KAREN.md,
+#   a provenance note about the kit's own history).
 #
 # THE TOKEN LIST
 #   The tokens are the stack of the FIRST profile (Gelball). When a second profile brings
@@ -71,8 +71,7 @@ SELF_REL="scripts/$PROG"
 # Meta/handoff docs ABOUT the kit, exempt for the reason in the header comment. Keep this
 # list tiny and explicit (one exact kit-relative path per line); never a directory or glob,
 # so a real payload leak can never slip in under a broad exclusion.
-META_EXCLUDES="HANDOVER.md
-WHY-KAREN.md"
+META_EXCLUDES="WHY-KAREN.md"
 
 # Derive the scan set: tracked files under the kit dir, MINUS anything under profiles/,
 # MINUS this script itself (it must name the tokens to search for them, not a leak), MINUS

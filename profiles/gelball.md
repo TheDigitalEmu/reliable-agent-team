@@ -16,7 +16,7 @@ Gelball.com: a community hub and directory for gelball (legality by region, fiel
 retailers, Discord and Facebook indexes, and an events calendar).
 
 ## OWNER
-Jamie, business owner of Gelball.com. The manager is the only agent that talks to the owner.
+Emu, business owner of Gelball.com. The manager is the only agent that talks to the owner.
 
 ## STACK
 Next.js + TypeScript (strict) + Tailwind, wired to Supabase (Postgres + Auth + RLS). Deployable to
