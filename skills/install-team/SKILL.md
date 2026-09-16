@@ -13,6 +13,13 @@ file is authoritative. Do not improvise past it.
 
 ## Do this
 
+0. FIRST, make yourself aware of this skill's own version and whether it is stale. Run
+   `sh ${CLAUDE_PLUGIN_ROOT}/enforcement/ensure-rat`. It prints that a reliable-agent-team skill is
+   installed, at what version, and, if the public repo is ahead, the exact `git pull` line to update
+   it. It is read-and-warn only: it never pulls and never runs anything it fetched. If it reports the
+   skill is behind, tell the user and update BEFORE laying the kit in, so you install the current
+   version, not a stale one. An agent that never learns its own RAT skill is installed and behind is
+   the exact gap this step closes.
 1. Read `${CLAUDE_PLUGIN_ROOT}/INSTALL.md` in full first. It defines the order, and the order is the
    point: the coordination substrate goes in BEFORE any parallel work.
 2. Copy the templates and ledgers into the project's `.team/` exactly as Step 1 describes (keep the

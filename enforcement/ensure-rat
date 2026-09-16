@@ -1,0 +1,160 @@
+#!/bin/sh
+# ============================================================================
+# ensure-rat : make an agent AWARE its reliable-agent-team skill is installed,
+#              and warn (never act) when that installed copy is behind.
+# ----------------------------------------------------------------------------
+# WHY THIS EXISTS (the gap it closes)
+#   RAT can be adopted two ways: as a git CLONE you sit inside, or as an
+#   INSTALLED SKILL under ~/.claude/skills. The SessionStart version check
+#   (enforcement/hooks/session-version-check) only helps the CLONE case: it
+#   resolves CLAUDE_PLUGIN_ROOT and reads the VERSION of the copy that fired it.
+#   An agent whose RAT is an installed skill folder gets NOTHING: nothing runs
+#   at session start, the skill folder carries no version token, and so the
+#   agent does not even know a RAT skill IS installed, let alone that it is
+#   stale. This script is the missing half: the same detect-and-warn the kit
+#   already does for its owasp dependency (see ensure-owasp), turned on RAT
+#   itself. Run it from the install-team skill so an agent using the skill is
+#   told, in plain terms, "a RAT skill vX.Y.Z is installed here, and it is
+#   behind; update it with git pull".
+#
+# WHAT IT DOES (detect, never act)
+#   1. Locate the installed RAT skill dir (default ~/.claude/skills/reliable-
+#      agent-team; override with RAT_SKILL_DIR). Report whether it is present
+#      and at what version, so the agent is AWARE of it.
+#   2. Fetch the pinned public VERSION (HTTPS only, no redirect, short timeout)
+#      and compare. If the installed skill is behind, print the exact update
+#      line. If ahead, treat the remote as suspicious. Never pull.
+#   3. Fail OPEN on any network trouble: awareness of the local install still
+#      prints; the behind-check is simply skipped.
+#
+# WHAT IT NEVER DOES (same envelope as session-version-check / ensure-owasp)
+#   - Never auto-pulls. Never fetches-then-executes. Applying an update is a
+#     human `git pull` after reading the diff.
+#   - Never follows a cross-host redirect for the version string.
+#   - Never blocks: a lower remote is reported suspicious, not applied; offline
+#     or tool-less runs still succeed with the local-awareness line.
+#
+# EXIT CODES
+#   0  RAT skill is present (awareness printed; current or behind-with-warning).
+#   3  RAT skill is NOT installed as a skill (this may be fine: you may be in a
+#      clone). Printed as a note, not an error, so a caller can distinguish.
+#   Always non-fatal in spirit: a caller that just wants awareness ignores the
+#   code and reads the printed lines.
+#
+# CONFIGURE (env, all optional)
+#   RAT_SKILL_DIR       installed skill path
+#                       (default: ~/.claude/skills/reliable-agent-team)
+#   RAT_VERSION_URL     pinned raw URL of the public VERSION
+#   RAT_VERSION_TIMEOUT fetch timeout seconds (default 2)
+# ============================================================================
+
+set -eu
+
+PROG="$(basename "$0")"
+
+HOME_DIR="${HOME:-${USERPROFILE:-}}"
+[ -n "$HOME_DIR" ] || { printf '%s: cannot resolve home directory\n' "$PROG" >&2; exit 3; }
+
+SKILL_DIR="${RAT_SKILL_DIR:-$HOME_DIR/.claude/skills/reliable-agent-team}"
+DEFAULT_URL="https://raw.githubusercontent.com/TheDigitalEmu/reliable-agent-team/main/VERSION"
+URL="${RAT_VERSION_URL:-$DEFAULT_URL}"
+TIMEOUT="${RAT_VERSION_TIMEOUT:-2}"
+
+# Read a dotted version token from a file: first non-blank, non-# line, trimmed.
+read_version_token() {
+	awk 'NF { line=$0; sub(/^[ \t\r]+/,"",line); if (substr(line,1,1) != "#") { print line; exit } }' 2>/dev/null \
+		| tr -d ' \t\r\n' 2>/dev/null || true
+}
+
+# The installed skill carries a VERSION file so it is self-identifying.
+installed_version() {
+	if [ -f "$SKILL_DIR/VERSION" ]; then
+		read_version_token < "$SKILL_DIR/VERSION"
+	else
+		printf 'unknown'
+	fi
+}
+
+# --- awareness: is a RAT skill installed at all? ----------------------------
+if [ ! -d "$SKILL_DIR" ] || [ ! -f "$SKILL_DIR/SKILL.md" ]; then
+	printf '%s: no reliable-agent-team SKILL installed at %s.\n' "$PROG" "$SKILL_DIR"
+	printf '  (This is fine if you are running RAT from a git clone. If you meant to\n'
+	printf '   use the installed skill, it is not there.)\n'
+	exit 3
+fi
+
+LOCAL="$(installed_version)"
+printf '%s: reliable-agent-team SKILL is installed at %s (version %s).\n' "$PROG" "$SKILL_DIR" "$LOCAL"
+
+# If the skill has no readable version token, we can announce presence but not
+# compare. Do not fetch against an unknown local; just stop here, aware.
+case "$LOCAL" in
+	''|unknown) exit 0 ;;
+	*[!0-9.]*) exit 0 ;;
+esac
+
+# --- behind-check: fetch pinned public VERSION, compare, warn only ----------
+fetch_remote() {
+	case "$URL" in
+		https://*) : ;;
+		*) return 1 ;;
+	esac
+	if command -v curl >/dev/null 2>&1; then
+		curl -fs --proto '=https' --tlsv1.2 --max-time "$TIMEOUT" -- "$URL" 2>/dev/null
+		return $?
+	fi
+	if command -v wget >/dev/null 2>&1; then
+		wget -q --max-redirect=0 -T "$TIMEOUT" -O- -- "$URL" 2>/dev/null
+		return $?
+	fi
+	return 1
+}
+
+REMOTE_RAW="$(fetch_remote || true)"
+REMOTE="$(printf '%s\n' "${REMOTE_RAW:-}" | read_version_token)"
+
+# No remote, or junk: fail open (awareness already printed).
+[ -n "$REMOTE" ] || exit 0
+case "$REMOTE" in
+	*[!0-9.]*) exit 0 ;;
+esac
+
+cmp_versions() {
+	l="$1"; r="$2"
+	oldifs="$IFS"; IFS='.'
+	# shellcheck disable=SC2086
+	set -- $l; l1="${1:-0}"; l2="${2:-0}"; l3="${3:-0}"
+	# shellcheck disable=SC2086
+	set -- $r; r1="${1:-0}"; r2="${2:-0}"; r3="${3:-0}"
+	IFS="$oldifs"
+	l1=${l1%%[!0-9]*}; l2=${l2%%[!0-9]*}; l3=${l3%%[!0-9]*}
+	r1=${r1%%[!0-9]*}; r2=${r2%%[!0-9]*}; r3=${r3%%[!0-9]*}
+	for pair in "$l1 $r1" "$l2 $r2" "$l3 $r3"; do
+		a=${pair% *}; b=${pair#* }
+		a=${a:-0}; b=${b:-0}
+		if [ "$a" -lt "$b" ]; then echo local_behind; return; fi
+		if [ "$a" -gt "$b" ]; then echo local_ahead; return; fi
+	done
+	echo eq
+}
+
+case "$(cmp_versions "$LOCAL" "$REMOTE")" in
+	eq)
+		exit 0 ;;
+	local_behind)
+		printf '%s\n' \
+			"[reliable-agent-team] Your INSTALLED SKILL is behind the public repo." \
+			"  installed: $LOCAL   available: $REMOTE" \
+			"  To update, review the changes and run:" \
+			"    cd \"$SKILL_DIR\" && git pull" \
+			"  (This check only warns. It does not pull or run anything.)" >&2
+		exit 0 ;;
+	local_ahead)
+		printf '%s\n' \
+			"[reliable-agent-team] Note: your installed SKILL ($LOCAL) is NEWER than" \
+			"the public repo ($REMOTE). If unexpected, treat the remote as suspicious" \
+			"(stale mirror or tampering) and do NOT downgrade." >&2
+		exit 0 ;;
+esac
+
+exit 0

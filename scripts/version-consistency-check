@@ -9,6 +9,10 @@
 #   other place that states the kit version must equal it:
 #     - .claude-plugin/plugin.json      "version"
 #     - .claude-plugin/marketplace.json  the plugin entry "version"
+#     - skills/install-team/VERSION     the version shipped WITH the installed
+#       skill, so an installed skill is self-identifying and ensure-rat can tell
+#       an agent whether its installed copy is behind. If this drifts, ensure-rat
+#       misreports staleness, so it must equal VERSION too.
 #   This is the mechanical proxy for the versioning policy (see VERSIONING.md):
 #   a bump edits VERSION, and these packaging surfaces must be bumped with it.
 #
@@ -55,6 +59,14 @@ check() {
 
 check ".claude-plugin/plugin.json"      "$(json_version .claude-plugin/plugin.json)"
 check ".claude-plugin/marketplace.json" "$(json_version .claude-plugin/marketplace.json)"
+
+# The skill ships its own VERSION so the installed copy is self-identifying.
+# Read it the same way as the authoritative token (first non-comment line).
+skill_version() {
+	[ -f "$1" ] || { printf ''; return; }
+	awk 'NF { l=$0; sub(/^[ \t\r]+/,"",l); if (substr(l,1,1) != "#") { print l; exit } }' "$1" | tr -d ' \t\r\n'
+}
+check "skills/install-team/VERSION"     "$(skill_version skills/install-team/VERSION)"
 
 if [ "$FAIL" -ne 0 ]; then
 	printf '%s: FAIL. Version surfaces disagree with VERSION (%s).\n' "$PROG" "$AUTH" >&2
