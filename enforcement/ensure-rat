@@ -1,49 +1,45 @@
 #!/bin/sh
 # ============================================================================
-# ensure-rat : make an agent AWARE its reliable-agent-team skill is installed,
-#              and warn (never act) when that installed copy is behind.
+# ensure-rat : make an agent AWARE the reliable-agent-team plugin is present,
+#              at what version, and warn (never act) when it is behind upstream.
 # ----------------------------------------------------------------------------
 # WHY THIS EXISTS (the gap it closes)
-#   RAT can be adopted two ways: as a git CLONE you sit inside, or as an
-#   INSTALLED SKILL under ~/.claude/skills. The SessionStart version check
-#   (enforcement/hooks/session-version-check) only helps the CLONE case: it
-#   resolves CLAUDE_PLUGIN_ROOT and reads the VERSION of the copy that fired it.
-#   An agent whose RAT is an installed skill folder gets NOTHING: nothing runs
-#   at session start, the skill folder carries no version token, and so the
-#   agent does not even know a RAT skill IS installed, let alone that it is
-#   stale. This script is the missing half: the same detect-and-warn the kit
-#   already does for its owasp dependency (see ensure-owasp), turned on RAT
-#   itself. Run it from the install-team skill so an agent using the skill is
-#   told, in plain terms, "a RAT skill vX.Y.Z is installed here, and it is
-#   behind; update it with git pull".
+#   The SessionStart version check only fires for a copy wired as a plugin hook.
+#   An agent that reaches the kit through a SKILL (install or update) otherwise
+#   learns nothing about its version or staleness. This script is the missing
+#   half, run from the skills: it reports the plugin's own version and, if the
+#   public repo is ahead, that an update is available. The kit does the same for
+#   its owasp dependency (see ensure-owasp); this turns it on RAT itself.
+#
+#   It reads the VERSION shipped ALONGSIDE this script (the plugin root is this
+#   script's ../../), so it never has to guess an install path: wherever the
+#   plugin lives, its VERSION travels with it. That is the whole reliability of
+#   this check.
 #
 # WHAT IT DOES (detect, never act)
-#   1. Locate the installed RAT skill dir (default ~/.claude/skills/reliable-
-#      agent-team; override with RAT_SKILL_DIR). Report whether it is present
-#      and at what version, so the agent is AWARE of it.
+#   1. Resolve the plugin root from this script's location and read its VERSION,
+#      so the agent is AWARE the kit is present and at what version.
 #   2. Fetch the pinned public VERSION (HTTPS only, no redirect, short timeout)
-#      and compare. If the installed skill is behind, print the exact update
-#      line. If ahead, treat the remote as suspicious. Never pull.
-#   3. Fail OPEN on any network trouble: awareness of the local install still
-#      prints; the behind-check is simply skipped.
+#      and compare. If behind, print how to update (ask; the update skill does
+#      it). If ahead, treat the remote as suspicious. Never pull.
+#   3. Fail OPEN on any network trouble: the local-awareness line still prints;
+#      the behind-check is skipped.
 #
 # WHAT IT NEVER DOES (same envelope as session-version-check / ensure-owasp)
-#   - Never auto-pulls. Never fetches-then-executes. Applying an update is a
-#     human `git pull` after reading the diff.
+#   - Never auto-pulls. Never fetches-then-executes. Applying an update is done
+#     by the update skill (shows the diff, fast-forwards), never a silent pull.
 #   - Never follows a cross-host redirect for the version string.
 #   - Never blocks: a lower remote is reported suspicious, not applied; offline
 #     or tool-less runs still succeed with the local-awareness line.
 #
 # EXIT CODES
-#   0  RAT skill is present (awareness printed; current or behind-with-warning).
-#   3  RAT skill is NOT installed as a skill (this may be fine: you may be in a
-#      clone). Printed as a note, not an error, so a caller can distinguish.
-#   Always non-fatal in spirit: a caller that just wants awareness ignores the
-#   code and reads the printed lines.
+#   0  plugin VERSION found (awareness printed; current or behind-with-warning).
+#   3  no readable VERSION next to this script (unexpected install shape).
+#      Printed as a note, not a hard error.
 #
 # CONFIGURE (env, all optional)
-#   RAT_SKILL_DIR       installed skill path
-#                       (default: ~/.claude/skills/reliable-agent-team)
+#   RAT_ROOT            plugin root to read VERSION from (default: this script's
+#                       ../../). Override for testing.
 #   RAT_VERSION_URL     pinned raw URL of the public VERSION
 #   RAT_VERSION_TIMEOUT fetch timeout seconds (default 2)
 # ============================================================================
@@ -52,10 +48,11 @@ set -eu
 
 PROG="$(basename "$0")"
 
-HOME_DIR="${HOME:-${USERPROFILE:-}}"
-[ -n "$HOME_DIR" ] || { printf '%s: cannot resolve home directory\n' "$PROG" >&2; exit 3; }
+# Plugin root: this script is at <root>/enforcement/ensure-rat, so root is ../..
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+ROOT="${RAT_ROOT:-$(CDPATH= cd -- "$script_dir/.." && pwd)}"
+VERSION_FILE="$ROOT/VERSION"
 
-SKILL_DIR="${RAT_SKILL_DIR:-$HOME_DIR/.claude/skills/reliable-agent-team}"
 DEFAULT_URL="https://raw.githubusercontent.com/TheDigitalEmu/reliable-agent-team/main/VERSION"
 URL="${RAT_VERSION_URL:-$DEFAULT_URL}"
 TIMEOUT="${RAT_VERSION_TIMEOUT:-2}"
@@ -66,30 +63,18 @@ read_version_token() {
 		| tr -d ' \t\r\n' 2>/dev/null || true
 }
 
-# The installed skill carries a VERSION file so it is self-identifying.
-installed_version() {
-	if [ -f "$SKILL_DIR/VERSION" ]; then
-		read_version_token < "$SKILL_DIR/VERSION"
-	else
-		printf 'unknown'
-	fi
-}
-
-# --- awareness: is a RAT skill installed at all? ----------------------------
-if [ ! -d "$SKILL_DIR" ] || [ ! -f "$SKILL_DIR/SKILL.md" ]; then
-	printf '%s: no reliable-agent-team SKILL installed at %s.\n' "$PROG" "$SKILL_DIR"
-	printf '  (This is fine if you are running RAT from a git clone. If you meant to\n'
-	printf '   use the installed skill, it is not there.)\n'
+# --- awareness: read the plugin's own VERSION -------------------------------
+if [ ! -f "$VERSION_FILE" ]; then
+	printf '%s: no VERSION found at %s (unexpected install shape).\n' "$PROG" "$VERSION_FILE"
 	exit 3
 fi
+LOCAL="$(read_version_token < "$VERSION_FILE")"
+[ -n "$LOCAL" ] || { printf '%s: VERSION at %s is empty.\n' "$PROG" "$VERSION_FILE"; exit 3; }
 
-LOCAL="$(installed_version)"
-printf '%s: reliable-agent-team SKILL is installed at %s (version %s).\n' "$PROG" "$SKILL_DIR" "$LOCAL"
+printf '%s: reliable-agent-team is installed at %s (version %s).\n' "$PROG" "$ROOT" "$LOCAL"
 
-# If the skill has no readable version token, we can announce presence but not
-# compare. Do not fetch against an unknown local; just stop here, aware.
+# Local must be a dotted numeric token to compare. If not, stay aware, stop.
 case "$LOCAL" in
-	''|unknown) exit 0 ;;
 	*[!0-9.]*) exit 0 ;;
 esac
 
@@ -143,15 +128,16 @@ case "$(cmp_versions "$LOCAL" "$REMOTE")" in
 		exit 0 ;;
 	local_behind)
 		printf '%s\n' \
-			"[reliable-agent-team] Your INSTALLED SKILL is behind the public repo." \
+			"[reliable-agent-team] Your installed kit is behind the public repo." \
 			"  installed: $LOCAL   available: $REMOTE" \
-			"  To update, review the changes and run:" \
-			"    cd \"$SKILL_DIR\" && git pull" \
+			"  To update, just ask: \"update reliable-agent-team\" (or run the" \
+			"  reliable-agent-team update skill). It shows what changed and applies" \
+			"  it for you. You do not type any git command." \
 			"  (This check only warns. It does not pull or run anything.)" >&2
 		exit 0 ;;
 	local_ahead)
 		printf '%s\n' \
-			"[reliable-agent-team] Note: your installed SKILL ($LOCAL) is NEWER than" \
+			"[reliable-agent-team] Note: your installed kit ($LOCAL) is NEWER than" \
 			"the public repo ($REMOTE). If unexpected, treat the remote as suspicious" \
 			"(stale mirror or tampering) and do NOT downgrade." >&2
 		exit 0 ;;

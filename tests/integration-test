@@ -525,46 +525,54 @@ else
 fi
 
 # ---------------------------------------------------------------- ER (ensure-rat awareness)
-# ensure-rat must make an agent AWARE of an installed RAT skill and its version,
-# and stay silent-but-successful when none is installed (the clone case). The
-# behind/ahead COMPARISON reuses the same version logic proven by the VC cases;
-# here we assert ER's unique behavior with no network: awareness + self-identify.
-# We force offline by pointing the fetch at a non-https URL (refused, fail open),
-# so these cases never touch the network.
+# ensure-rat must make an agent AWARE the plugin is present and at what version
+# (read from the plugin-root VERSION beside the script), and warn (never act)
+# when behind, pointing at the plain-language update, NOT a git command. The
+# behind/ahead COMPARISON reuses the version logic proven by the VC cases; here
+# we assert ER's unique behavior with no network by forcing a non-https URL
+# (refused, fail open), so these cases never touch the network.
 ERAT="$KIT_DIR/enforcement/ensure-rat"
 ER="$WORK/er"; mkdir -p "$ER"
 
-# absent: no skill dir -> note it is not installed, exit 3 (distinct from error)
-set +e
-ER_OUT="$(RAT_SKILL_DIR="$ER/none" RAT_VERSION_URL='http://x' sh "$ERAT" 2>&1)"; er_rc=$?
-set -e
-if [ "$er_rc" -eq 3 ] && printf '%s' "$ER_OUT" | grep -qi 'no reliable-agent-team SKILL installed'; then
-	ok "ER absent skill reports not-installed (exit 3, not an error)"
-else
-	bad "ER absent skill did not report not-installed / wrong exit (rc=$er_rc)"
-fi
-
-# present + current: local VERSION equals the kit VERSION -> aware, exit 0
+# present + readable VERSION -> aware, self-identifying, exit 0
 KITV="$(awk 'NF{l=$0;sub(/^[ \t\r]+/,"",l);if(substr(l,1,1)!="#"){print l;exit}}' "$KIT_DIR/VERSION" | tr -d ' \t\r\n')"
-mkdir -p "$ER/cur"; printf 'name: install-team\n' > "$ER/cur/SKILL.md"; printf '%s\n' "$KITV" > "$ER/cur/VERSION"
+mkdir -p "$ER/cur/enforcement"; printf '%s\n' "$KITV" > "$ER/cur/VERSION"
+cp "$ERAT" "$ER/cur/enforcement/ensure-rat"
 set +e
-ER_OUT="$(RAT_SKILL_DIR="$ER/cur" RAT_VERSION_URL='http://x' sh "$ERAT" 2>&1)"; er_rc=$?
+ER_OUT="$(RAT_VERSION_URL='http://x' sh "$ER/cur/enforcement/ensure-rat" 2>&1)"; er_rc=$?
 set -e
-if [ "$er_rc" -eq 0 ] && printf '%s' "$ER_OUT" | grep -qi "SKILL is installed" && printf '%s' "$ER_OUT" | grep -q "$KITV"; then
-	ok "ER present skill is self-identifying (name + version, exit 0)"
+if [ "$er_rc" -eq 0 ] && printf '%s' "$ER_OUT" | grep -qi "is installed" && printf '%s' "$ER_OUT" | grep -q "$KITV"; then
+	ok "ER present kit is self-identifying (version from plugin root, exit 0)"
 else
-	bad "ER present skill did not self-identify (rc=$er_rc)"
+	bad "ER present kit did not self-identify (rc=$er_rc)"
 fi
 
-# present but version file missing: aware of presence, cannot compare, still exit 0
-mkdir -p "$ER/nover"; printf 'name: install-team\n' > "$ER/nover/SKILL.md"
+# no VERSION beside the script -> note unexpected shape, exit 3 (not an error)
+mkdir -p "$ER/none/enforcement"; cp "$ERAT" "$ER/none/enforcement/ensure-rat"
 set +e
-ER_OUT="$(RAT_SKILL_DIR="$ER/nover" RAT_VERSION_URL='http://x' sh "$ERAT" 2>&1)"; er_rc=$?
+ER_OUT="$(RAT_VERSION_URL='http://x' sh "$ER/none/enforcement/ensure-rat" 2>&1)"; er_rc=$?
 set -e
-if [ "$er_rc" -eq 0 ] && printf '%s' "$ER_OUT" | grep -qi "version unknown"; then
-	ok "ER present-without-VERSION is aware and fails open (exit 0)"
+if [ "$er_rc" -eq 3 ] && printf '%s' "$ER_OUT" | grep -qi 'no VERSION found'; then
+	ok "ER missing VERSION reports unexpected shape (exit 3)"
 else
-	bad "ER present-without-VERSION mishandled (rc=$er_rc)"
+	bad "ER missing VERSION mishandled (rc=$er_rc)"
+fi
+
+# behind -> warns, points at plain-language update, NEVER a git command.
+# Mock the remote (no network), same seam as the VC tests: swap the fetch line
+# for a REMOTE_MOCK override.
+mkdir -p "$ER/behind"; printf '0.0.1\n' > "$ER/behind/VERSION"
+sed 's#REMOTE_RAW="$(fetch_remote || true)"#REMOTE_RAW="${REMOTE_MOCK-$(fetch_remote || true)}"#' \
+	"$ERAT" > "$ER/behind-mock"
+set +e
+ER_OUT="$(RAT_ROOT="$ER/behind" REMOTE_MOCK="9.9.9" sh "$ER/behind-mock" 2>&1)"; er_rc=$?
+set -e
+if [ "$er_rc" -eq 0 ] && printf '%s' "$ER_OUT" | grep -qi 'behind the public repo' \
+	&& printf '%s' "$ER_OUT" | grep -qi 'update reliable-agent-team' \
+	&& ! printf '%s' "$ER_OUT" | grep -qi 'git pull'; then
+	ok "ER behind warns with plain-language update, no git command"
+else
+	bad "ER behind wording wrong or leaked a git command (rc=$er_rc)"
 fi
 
 # ---------------------------------------------------------------- COST (spend ceiling)

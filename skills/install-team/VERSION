@@ -1,4 +1,0 @@
-0.4.0
-# Bump the version token above when a change on main should tell adopting
-# projects to pull. main is the release line. The version check reads only the
-# first non-comment line; these # lines are ignored.

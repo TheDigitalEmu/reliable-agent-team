@@ -14,9 +14,11 @@ LOUD when it is broken: a hook that blocks the commit, a script that blocks the 
 greps git and the live URL before it will print "done." Read `WHY-KAREN.md` for the account of the
 failure this kit answers.
 
-This kit ships as a Claude Code plugin with an `install-team` skill (see `.claude-plugin/` and
-`skills/`), but it needs none of that to adopt: point an agent at this repo, say "install this", and
-have it follow `INSTALL.md`. See `ROADBLOCK-REGISTER.md` for the design spine.
+This kit ships as a Claude Code plugin with two skills (see `.claude-plugin/` and `skills/`): `install`
+(lay the kit into a project) and `update` (fetch and apply the latest version of the kit, on the plain
+word "update", no git command typed). It needs none of that to adopt by hand: point an agent at this
+repo, say "install this", and have it follow `INSTALL.md`. See `ROADBLOCK-REGISTER.md` for the design
+spine.
 
 ## The design principle
 Reliability is a failure RATE you drive down with enforcement plus real usage, not a state a document
