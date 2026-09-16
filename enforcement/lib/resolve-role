@@ -1,0 +1,102 @@
+#!/bin/sh
+# ============================================================================
+# resolve-role : print the declared role of the current (or a named) session.
+# ----------------------------------------------------------------------------
+# ROADBLOCK REMOVED
+#   "The manager writes application code / signs off its own work" (F2 / role
+#   separation). roles.md says the manager writes docs, ledgers and logs, never
+#   application code, and never authors a gate PASS. That was PROSE only: nothing
+#   read it at commit or gate time. This resolver makes the role a machine-read
+#   fact so the pre-commit code guard and gate-check can refuse on it.
+#
+# WHAT IT DOES
+#   Resolves a session id to its role, from (in precedence order):
+#     1. $TEAM_ROLE                      (explicit override for this run)
+#     2. a ROLE= line in the whoami file (.team/whoami, or $TEAM_WHOAMI)
+#     3. a .team/roles ledger row        (session | role), or $TEAM_ROLES
+#   Prints the role on stdout, lower-cased and trimmed, or nothing if unknown.
+#   Exit 0 whether or not a role was found; the CALLER decides what an unknown
+#   role means (the code guard fails OPEN on unknown, gate-check fails CLOSED on
+#   a manager and OPEN on unknown, each documented at its own site).
+#
+# WHOAMI FORMAT (backwards compatible)
+#   The legacy whoami is a single bare line: the session id, no role. That still
+#   works and resolves to an unknown role. To declare a role, either:
+#     - first line is the session id, and a later line reads   ROLE=manager
+#     - or the whole file is a single line   <session>:<role>   (e.g. ed:manager)
+#   new-session writes the ROLE= form. Both are read here.
+#
+# USAGE
+#   resolve-role                 # role of the current session (from whoami)
+#   resolve-role <session-id>    # role of a named session (from the roles ledger)
+#
+#   Env overrides:
+#     TEAM_ROLE     force the role for this run (wins over everything)
+#     TEAM_WHOAMI   whoami path            (default .team/whoami)
+#     TEAM_ROLES    session->role ledger   (default .team/roles)
+#
+# SELF-TEST (scratch dir)
+#   mkdir -p .team
+#   printf 'ed\nROLE=manager\n' > .team/whoami
+#   ./resolve-role                       # -> manager
+#   printf 'dev-a\n' > .team/whoami
+#   ./resolve-role                       # -> (empty: unknown, legacy file)
+#   printf 'ed:manager\n' > .team/whoami
+#   ./resolve-role                       # -> manager
+#   printf '| session | role |\n|---|---|\n| ed | manager |\n' > .team/roles
+#   ./resolve-role ed                    # -> manager
+# ============================================================================
+
+set -eu
+
+WHOAMI="${TEAM_WHOAMI:-.team/whoami}"
+ROLES="${TEAM_ROLES:-.team/roles}"
+
+norm() {  # lower-case and trim
+	printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
+# 1. explicit override wins.
+if [ -n "${TEAM_ROLE:-}" ]; then
+	norm "$TEAM_ROLE"
+	exit 0
+fi
+
+WANT_SESSION="${1:-}"
+
+# 2. no session id given: read the current session's own whoami file.
+if [ -z "$WANT_SESSION" ]; then
+	[ -f "$WHOAMI" ] || exit 0
+	# ROLE= line anywhere in the file (comments stripped).
+	role_line=$(sed -e 's/#.*$//' "$WHOAMI" 2>/dev/null \
+		| grep -iE '^[[:space:]]*ROLE[[:space:]]*=' | head -n 1 || true)
+	if [ -n "$role_line" ]; then
+		norm "$(printf '%s' "$role_line" | sed -e 's/^[[:space:]]*[Rr][Oo][Ll][Ee][[:space:]]*=//')"
+		exit 0
+	fi
+	# single-line <session>:<role> form.
+	first=$(sed -e 's/#.*$//' "$WHOAMI" 2>/dev/null \
+		| sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v '^$' | head -n 1 || true)
+	case "$first" in
+		*:*) norm "${first##*:}"; exit 0 ;;
+	esac
+	# whoami's session id, then fall through to the roles ledger for it.
+	WANT_SESSION=$(printf '%s' "$first" | sed 's/:.*$//')
+	[ -n "$WANT_SESSION" ] || exit 0
+fi
+
+# 3. look the session up in the roles ledger (session | role table).
+[ -f "$ROLES" ] || exit 0
+awk -F '|' -v s="$(norm "$WANT_SESSION")" '
+	{
+		c1=$1; c2=$2;
+		# a leading pipe makes field 1 empty; shift if so.
+		if (c1 ~ /^[[:space:]]*$/ && NF >= 3) { c1=$2; c2=$3 }
+		gsub(/^[[:space:]]+|[[:space:]]+$/, "", c1);
+		gsub(/^[[:space:]]+|[[:space:]]+$/, "", c2);
+		if (tolower(c1) == s && c2 != "" && tolower(c1) != "session" && c2 !~ /^-+$/) {
+			print tolower(c2); exit
+		}
+	}
+' "$ROLES"
+exit 0

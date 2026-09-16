@@ -1,0 +1,67 @@
+#!/bin/sh
+# ============================================================================
+# is-code : the single classifier for "is this path application code?"
+# ----------------------------------------------------------------------------
+# ONE definition of code, shared by every wall, so they can never disagree:
+#   - deny-manager-code-write (PreToolUse, blocks a manager WRITING code)
+#   - pre-commit-role         (git pre-commit, blocks a manager COMMITTING code)
+# If these two used separate lists, a path could be writable-but-not-committable
+# or the reverse, and the guarantee would have a seam. This is that seam closed.
+#
+# CONTRACT
+#   is-code <path>
+#     exit 0  => the path IS code a manager must not author.
+#     exit 1  => the path is NOT code (docs, ledgers, registers, notes).
+#   `case` uses fnmatch; * spans slashes, so a src/** prefix matches nested files.
+#   Bias toward exit 0 (code): a false "code" is a one-word role fix; a false
+#   "not code" is the incident this exists to stop.
+#
+# OWNER DECISION (2026-09-14): dependency manifests, the python validate gates,
+# and CSS are all code (rule 8 makes theming code). Docs, ledgers, registers,
+# discussion and plain markdown are not.
+#
+# PROJECT OVERRIDE: a project may ship its own list at .team/is-code.local and
+# it is sourced if present, letting a project add or exempt paths without editing
+# the kit. The function it defines, project_is_code, wins when it returns 0 or 1;
+# returning 2 means "no opinion, fall through to the default".
+#
+# SELF-TEST
+#   ./is-code axiom-backend/src/app.js ; echo $?    # -> 0
+#   ./is-code docs/scope/README.md    ; echo $?     # -> 1
+#   ./is-code tools/validate-docs.py  ; echo $?     # -> 0
+#   ./is-code .team/GATES.md          ; echo $?     # -> 1
+# ============================================================================
+
+set -eu
+
+P="${1:-}"
+[ -n "$P" ] || exit 1
+P="${P#./}"
+
+# Optional project override.
+if [ -f ".team/is-code.local" ]; then
+	# shellcheck disable=SC1091
+	. ".team/is-code.local"
+	if command -v project_is_code >/dev/null 2>&1; then
+		if project_is_code "$P"; then exit 0; fi
+		_rc=$?
+		[ "$_rc" -eq 1 ] && exit 1
+		# _rc 2 (or anything else): no opinion, fall through.
+	fi
+fi
+
+case "$P" in
+	# explicit NON-code a manager owns, tested first.
+	*.md|docs/*|*/docs/*|.team/*|*/.team/*|discussion/*|*/discussion/*|hub-identity-discussion/*) exit 1 ;;
+	# source trees.
+	axiom-backend/src/*|axiom-frontend/src/*|*/src/*|src/*) exit 0 ;;
+	# source and styling extensions anywhere.
+	*.js|*.jsx|*.ts|*.tsx|*.mjs|*.cjs|*.css|*.scss|*.sass) exit 0 ;;
+	# dependency manifests and lockfiles.
+	package.json|*/package.json|package-lock.json|*/package-lock.json|yarn.lock|*/yarn.lock|pnpm-lock.yaml|*/pnpm-lock.yaml) exit 0 ;;
+	# python (the validate gates and anything else).
+	*.py) exit 0 ;;
+	# html entry points.
+	*.html) exit 0 ;;
+	*) exit 1 ;;
+esac

@@ -51,12 +51,39 @@ case "${1:-}" in
 	-h|--help|"") [ -z "${1:-}" ] && { echo "error: session-name and branch are required." >&2; usage 2; }; usage 0 ;;
 esac
 
-SESSION="$1"
+# Role is declared per session so the write wall (deny-manager-code-write) and
+# the commit backstop (pre-commit-role) know who is the manager. It may be given
+# as --role manager, --role=manager, or $TEAM_ROLE. Pull the flag OUT of the
+# argument list first, in BOTH forms, and rebuild the positional args without it,
+# so the remaining positionals (session, branch, worktree-path, claim-glob) keep
+# their positions and the flag is never handed to git as a worktree path.
+ROLE="${TEAM_ROLE:-}"
+_pos_reset=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--role) ROLE="${2:-}"; shift 2 ;;
+		--role=*) ROLE="${1#--role=}"; shift ;;
+		*) _pos_reset="$_pos_reset '$1'"; shift ;;
+	esac
+done
+eval "set -- $_pos_reset"
+
+SESSION="${1:-}"
 BRANCH="${2:-}"
+if [ -z "$SESSION" ]; then
+	echo "error: session-name is required." >&2
+	usage 2
+fi
 if [ -z "$BRANCH" ]; then
 	echo "error: branch argument is required." >&2
 	usage 2
 fi
+
+ROLE=$(printf '%s' "$ROLE" | tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+case "$ROLE" in
+	""|manager|architect|researcher|developer|security|reviewer|qa) : ;;
+	*) echo "error: --role must be one of manager architect researcher developer security reviewer qa (got '$ROLE')." >&2; exit 2 ;;
+esac
 
 # --- sanitise all fields that get written into the shared pipe-delimited ledger
 # (M5, ledger-row injection). A pipe forges extra columns; a newline forges a
@@ -139,9 +166,18 @@ else
 fi
 
 # --- 2. write the whoami file in the worktree -------------------------------
+# The whoami carries the session id on line 1 and, when a role was given, a
+# ROLE= line the role-enforcement hooks read. A role of "manager" is what the
+# write wall and commit backstop key on. An omitted role leaves the file in the
+# legacy single-line form, which resolves to an unknown role (hooks fail open).
 mkdir -p "$WORKTREE_PATH/.team"
-printf '%s\n' "$SESSION" > "$WORKTREE_PATH/.team/whoami"
-echo "wrote $WORKTREE_PATH/.team/whoami ($SESSION)"
+if [ -n "$ROLE" ]; then
+	printf '%s\nROLE=%s\n' "$SESSION" "$ROLE" > "$WORKTREE_PATH/.team/whoami"
+	echo "wrote $WORKTREE_PATH/.team/whoami ($SESSION, role=$ROLE)"
+else
+	printf '%s\n' "$SESSION" > "$WORKTREE_PATH/.team/whoami"
+	echo "wrote $WORKTREE_PATH/.team/whoami ($SESSION, no role declared)"
+fi
 
 # --- 3. append a claim row to the shared ledger (idempotent) ----------------
 mkdir -p "$(dirname "$LEDGER")"

@@ -63,6 +63,18 @@ re-asking. And the retrospective is required from day one because most rules exi
 something broke; a team with no failure ledger re-earns every scar. The self-test fails without the
 ledger so the enforcement, not memory, keeps it present.
 
+## Unsupervised Mode (uMode)
+Why a named mode and not just "trust the manager more": the failure the owner-contract already names,
+that stopping to re-ask trains the owner they cannot walk away, has a sharper form. An autonomous
+manager that surfaces a judgment call the owner could not answer better than best practice defeats the
+entire premise of walking away, even while feeling diligent. uMode makes the manager a problem solver
+under an explicit grant: intercept every question, answer it by best practice, solve every problem,
+and park only the genuine irreversible stops into one end-of-stretch report rather than pinging live.
+It is gated behind an explicit per-stretch grant, and auto-disables at exhaustion, because handing over
+the right to make every call without you is exactly the kind of authorization that must be deliberate
+and bounded, not standing. The grant ask forbids babble because an owner deciding whether to walk away
+needs the plain shape of what they are authorizing, not a wall of mechanics.
+
 ## The honest limit (see the register's Limits section)
 This kit hardens against the failures THIS project hit (n equals 1). It is blind to modes the project
 never encountered. Known gaps not yet removed: cost/token blowout, correlated error (two gates sharing

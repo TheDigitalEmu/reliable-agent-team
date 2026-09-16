@@ -1,0 +1,115 @@
+#!/bin/sh
+# ============================================================================
+# deny-manager-code-write : PreToolUse wall against a manager WRITING code.
+# ----------------------------------------------------------------------------
+# This is the PRIMARY wall. The git pre-commit-role hook is a backstop that
+# catches code at commit time; this one stops the manager at the ACT of writing,
+# before a single line is saved. "Cannot write code" is about authorship, and a
+# git hook cannot see authorship (it only sees a staged file), so authorship has
+# to be enforced where the write happens: the Edit/Write tool call.
+#
+# It is the exact same mechanism as the em-dash rule: a PreToolUse hook the agent
+# cannot talk past, because it is the harness, not the agent.
+#
+# WIRING (Claude settings.json)
+#   Register it as a PreToolUse hook matching the Write and Edit tools. Put it in
+#   the GLOBAL ~/.claude/settings.json, not the project's, so a manager agent
+#   cannot edit the project settings to disarm its own wall:
+#     {
+#       "hooks": {
+#         "PreToolUse": [
+#           { "matcher": "Write|Edit|MultiEdit",
+#             "hooks": [ { "type": "command",
+#               "command": "sh /abs/path/enforcement/hooks/deny-manager-code-write" } ] }
+#         ]
+#       }
+#     }
+#
+# HOW IT DECIDES
+#   Reads the hook JSON on stdin. Pulls the target file path from tool_input
+#   (file_path, or path). Resolves the current session's role via resolve-role,
+#   reading .team/whoami relative to the working directory the hook runs in.
+#   If the role is manager AND the target path is code, it DENIES the tool call.
+#   Any other role, an unknown role, or a non-code path is ALLOWED.
+#
+# OUTPUT CONTRACT (PreToolUse)
+#   Exit 0 with no output          -> allow.
+#   Exit 2 with a reason on stderr -> deny, reason shown to the agent.
+#   (A permissionDecision JSON on stdout is also honoured by the harness; exit 2
+#   is the portable path and is what this uses.)
+#
+# The "is this code" test is intentionally the SAME LIST as pre-commit-role's
+# is_code, kept in the shared classifier enforcement/lib/is-code so the write
+# wall and the commit backstop can never disagree on what counts as code.
+#
+# SELF-TEST
+#   printf '{"tool_name":"Write","tool_input":{"file_path":"axiom-backend/src/x.js"}}' \
+#     | TEAM_ROLE=manager sh deny-manager-code-write ; echo $?   # -> 2 (denied)
+#   printf '{"tool_name":"Write","tool_input":{"file_path":"docs/note.md"}}' \
+#     | TEAM_ROLE=manager sh deny-manager-code-write ; echo $?   # -> 0 (allowed)
+#   printf '{"tool_name":"Write","tool_input":{"file_path":"src/x.js"}}' \
+#     | TEAM_ROLE=developer sh deny-manager-code-write ; echo $?  # -> 0 (allowed)
+# ============================================================================
+
+set -eu
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+RESOLVE_ROLE="${RESOLVE_ROLE:-$HERE/../lib/resolve-role}"
+IS_CODE="${IS_CODE:-$HERE/../lib/is-code}"
+
+# Read the hook payload from stdin.
+PAYLOAD=$(cat 2>/dev/null || true)
+
+# Extract a JSON string value for a key, first match, without a JSON parser.
+# Tolerates whitespace and escaped characters well enough for a file path.
+json_str() {  # json_str <key>
+	printf '%s' "$PAYLOAD" \
+		| tr '\n' ' ' \
+		| sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+		| head -n 1
+}
+
+# The target path lives under tool_input as file_path (Write/Edit) or path.
+FILE_PATH=$(json_str file_path)
+[ -n "$FILE_PATH" ] || FILE_PATH=$(json_str path)
+
+# No path means nothing to guard (e.g. a tool call we do not restrict). Allow.
+[ -n "$FILE_PATH" ] || exit 0
+
+# Resolve role. resolve-role reads .team/whoami relative to the cwd the hook
+# runs in, which the harness sets to the project root.
+if [ -f "$RESOLVE_ROLE" ]; then
+	ROLE=$(sh "$RESOLVE_ROLE" 2>/dev/null || true)
+else
+	# Resolver missing: this wall cannot verify the role. Fail OPEN here (do not
+	# wedge every write in a repo that has not installed the lib), because the
+	# git commit backstop still guards the dangerous end. Note it on stderr.
+	printf 'deny-manager-code-write: resolver not found at %s; wall inactive.\n' "$RESOLVE_ROLE" >&2
+	exit 0
+fi
+
+# Only the manager is walled. Unknown role fails OPEN (same reason as the hook).
+[ "$ROLE" = "manager" ] || exit 0
+
+# Normalise a leading ./ and any absolute prefix down to a repo-relative-ish tail
+# so the classifier's globs match whether the tool passed an absolute or relative
+# path. Strip everything up to and including the last occurrence of a known repo
+# root marker if present; otherwise use the path as given.
+REL="$FILE_PATH"
+case "$REL" in
+	*/axiom-backend/*) REL="axiom-backend/${REL#*/axiom-backend/}" ;;
+	*/axiom-frontend/*) REL="axiom-frontend/${REL#*/axiom-frontend/}" ;;
+esac
+REL="${REL#./}"
+
+if [ -f "$IS_CODE" ] && sh "$IS_CODE" "$REL"; then
+	printf '%s\n' \
+		"DENIED (deny-manager-code-write): this session's role is manager, which must not write code." \
+		"Target: $FILE_PATH" \
+		"A manager delegates code to a developer session and gates it via reviewer/security/qa." \
+		"It never authors code itself (separation of duties; the Ed incident's primary wall)." \
+		"If this session is genuinely a developer, correct its ROLE= in .team/whoami." >&2
+	exit 2
+fi
+
+exit 0

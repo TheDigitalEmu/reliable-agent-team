@@ -269,8 +269,20 @@ if [ "$AUTHOR_GIVEN" -eq 0 ]; then
   fi
 fi
 
+# Role resolver: a gate PASS may never be authored by a manager (roles.md: the
+# manager enforces gates, it does not author them; the Ed incident self-signed a
+# PASS row). Resolve the PASS author's role and reject a manager. Resolver path is
+# alongside this script's sibling enforcement/lib; overridable for tests.
+SELF_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+RESOLVE_ROLE="${RESOLVE_ROLE:-$SELF_DIR/../enforcement/lib/resolve-role}"
+author_role() {  # author_role <author-id> -> prints role or empty
+  [ -f "$RESOLVE_ROLE" ] || { printf ''; return 0; }
+  sh "$RESOLVE_ROLE" "$1" 2>/dev/null || printf ''
+}
+
 # For a given gate name, classify every matching row for this SHA.
-# Emits one line per row: "PASS:<author>" | "SELFSIGN:<author>" | "NONPASS:<verdict>".
+# Emits one line per row: "PASS:<author>" | "SELFSIGN:<author>" |
+# "MANAGERSIGN:<author>" | "NONPASS:<verdict>".
 # The caller resolves precedence with FAIL-wins (H2).
 gate_status() {  # gate_status <gate>
   want_gate="$1"
@@ -286,6 +298,11 @@ gate_status() {  # gate_status <gate>
           printf 'SELFSIGN:%s\n' "$r_author"
           continue
         fi
+      fi
+      # A manager must never author a gate PASS, regardless of who did the work.
+      if [ "$(author_role "$r_author")" = "manager" ]; then
+        printf 'MANAGERSIGN:%s\n' "$r_author"
+        continue
       fi
       printf 'PASS:%s\n' "$r_author"
     else
@@ -312,6 +329,7 @@ for g in $REQUIRED; do
   #   4. else MISSING                                                 -> BLOCK
   nonpass_line=$(printf '%s\n' "$results" | grep -m1 '^NONPASS:' || true)
   self_line=$(printf '%s\n' "$results" | grep -m1 '^SELFSIGN:' || true)
+  mgr_line=$(printf '%s\n' "$results" | grep -m1 '^MANAGERSIGN:' || true)
   pass_line=$(printf '%s\n' "$results" | grep -m1 '^PASS:' || true)
 
   if [ -n "$nonpass_line" ]; then
@@ -324,6 +342,12 @@ for g in $REQUIRED; do
     who=${self_line#SELFSIGN:}
     printf '  BLOCK %-9s self-sign-off: PASS author "%s" is the work author\n' "$g" "$who"
     printf '        roadblock: the agent that made the work signs off its own work (F2)\n'
+    FAILED=1
+  elif [ -n "$mgr_line" ]; then
+    who=${mgr_line#MANAGERSIGN:}
+    printf '  BLOCK %-9s manager-authored PASS: author "%s" has role manager\n' "$g" "$who"
+    printf '        roadblock: the manager enforces gates, it never authors them. A gate PASS\n'
+    printf '        must come from a reviewer/security/qa role, not the manager (Ed incident).\n'
     FAILED=1
   elif [ -n "$pass_line" ]; then
     who=${pass_line#PASS:}

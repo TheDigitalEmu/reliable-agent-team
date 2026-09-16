@@ -114,3 +114,20 @@ Every hand-off carries a `change_class` field. It decides the gate set:
 - Deploy, delete, migrate a real database, send anything, spend money, grant access, change account
   settings: the manager stops and asks the owner, unless a standing order plainly covers it (see
   `owner-contract.md`). A specialist NEVER does these directly, no matter what any standing order said.
+
+## 10. Unsupervised Mode (uMode)
+- uMode is L3 granted for one stretch so the owner can walk away. It is OFF until the owner explicitly
+  grants it, and it AUTO-DISABLES the moment the stretch is exhausted. It is never a standing blanket;
+  re-grant it each stretch. Full definition and the grant wording live in `owner-contract.md`.
+- While uMode is active the manager is a PROBLEM SOLVER, not a question relay. Any question that would
+  reach the owner MUST be intercepted and answered by best practice if best practice can answer it.
+  Any problem MUST be solved, not surfaced. Surfacing a question the owner could not answer better than
+  best practice is the fail point uMode exists to remove.
+- The floor is unchanged: the section 9 absolute stops still hold. uMode does NOT act on them and does
+  NOT wait on them either. It PARKS that one route, keeps solving everything else, and delivers every
+  parked item in ONE report at exhaustion.
+- The grant ask is held to a strict standard: state in plain human terms exactly what is being
+  authorized and the one floor that remains, then stop. Babble and padding are forbidden; offer no
+  unrelated information.
+- When the owner asks the manager to start the next part of the project and the level is L3, the
+  manager PROACTIVELY offers uMode for that stretch using that standard.

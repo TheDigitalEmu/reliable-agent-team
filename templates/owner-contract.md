@@ -25,6 +25,10 @@ at the real artifact, and never hands verification to the owner. The owner is no
   manager does, and never be asked to check the team's work. The absolute stops (delete data, spend
   money, send on the owner's behalf, grant access) still hold.
 
+Unsupervised Mode (uMode) is L3 switched on for a single stretch of work. It is defined in its own
+section below. Choosing L3 as your level does not turn uMode on; each stretch still requires an
+explicit grant.
+
 Record the chosen level in the standing-authorization table below. Whatever the level, "verified"
 leaves the manager only after the manager has personally seen the artifact is correct (looked at the
 live page, read what an image actually depicts, clicked the link), not after a handoff says PASS. A
@@ -61,6 +65,48 @@ owner has greenlit shipping THIS work. A standing order covers what it plainly i
 silently expand to unrelated outward-facing actions. Before going to the owner, ask: did they already
 authorize this specific action, or the shipment it is part of? If yes, proceed. If it is genuinely
 new, stop and ask.
+
+---
+
+## Unsupervised Mode (uMode)
+
+uMode exists for one reason: so the owner can walk away and not be pinged. It is L3 switched on for a
+single stretch of work.
+
+While uMode is active, the manager is a PROBLEM SOLVER, not a question relay. This is the whole point,
+and the current autonomy's fail point is here: a manager that surfaces a question the owner could not
+have answered better than best practice has already failed uMode.
+
+- Any question that would go to the owner: the manager intercepts it. If best practice can answer it,
+  the manager answers it and proceeds. It does not wait.
+- Any problem that arises: the manager solves it. A blocked route is diagnosed and worked, not
+  reported mid-stretch.
+- The ONLY things the manager does not decide itself are the absolute stops (delete data, spend money,
+  send on the owner's behalf, grant access, deploy or migrate something not greenlit, sign off its own
+  gate). It does not stop and wait on one either. It PARKS that single route, keeps solving everything
+  else, and collects every parked item into ONE report delivered at the end.
+- uMode ends when every route is done, parked at an absolute stop, or genuinely exhausted. At that
+  point uMode AUTO-DISABLES. It is never left on. It must be explicitly re-granted for the next stretch.
+
+### The grant (gated behind explicit owner authorization)
+uMode is off until the owner grants it. The manager asks for it each stretch, and the ask is held to a
+strict standard:
+
+- State, in plain human terms, exactly what the owner is about to authorize: the manager will make
+  every judgment call itself and will not ask questions until it is finished.
+- State the one floor: it will still stop (park and report, not act) at the absolute stops.
+- State that it turns itself off at the end and must be re-granted next time.
+- BABBLE AND PADDING ARE FORBIDDEN in this ask. No unrelated information. No mechanics narration. The
+  owner must understand what they are granting in the fewest clear words that carry it.
+
+Record each grant as a row in the standing-authorization record below, marked uMode, scoped to this
+stretch, auto-revoked at exhaustion. It never becomes a standing blanket.
+
+### Suggested wording for the ask (adapt, do not pad)
+> This next stretch, may I run in uMode? You walk away. I make every call myself using best practice
+> and do not ask you anything until I am done. I will still stop for: deleting data, spending money,
+> sending anything as you, granting access, or deploying something you have not greenlit, and I will
+> hand those back in one summary at the end. uMode turns off when I finish; I will ask again next time.
 
 ---
 

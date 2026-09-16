@@ -77,10 +77,11 @@ GIT_DIR=$(git rev-parse --git-dir)
 GIT_HOOKS="$GIT_DIR/hooks"
 
 [ -f "$HOOKS_SRC/pre-commit-claim" ] || { echo "install-hooks: missing $HOOKS_SRC/pre-commit-claim" >&2; exit 2; }
+[ -f "$HOOKS_SRC/pre-commit-role" ]  || { echo "install-hooks: missing $HOOKS_SRC/pre-commit-role"  >&2; exit 2; }
 [ -f "$HOOKS_SRC/pre-push-gate" ]   || { echo "install-hooks: missing $HOOKS_SRC/pre-push-gate"   >&2; exit 2; }
 
 # best-effort executable bits (harmless on Windows filesystems)
-chmod +x "$HOOKS_SRC/pre-commit-claim" "$HOOKS_SRC/pre-push-gate" 2>/dev/null || true
+chmod +x "$HOOKS_SRC/pre-commit-claim" "$HOOKS_SRC/pre-commit-role" "$HOOKS_SRC/pre-push-gate" 2>/dev/null || true
 
 # --------------------------------------------------------------------------
 WRAP_DIR="$GIT_DIR/team-hooks"
@@ -135,17 +136,24 @@ if [ "$MODE" = "hookspath" ]; then
 		fi
 	fi
 	# generate git-standard-named wrapper hooks that exec the kit hooks.
+	# pre-commit chains TWO guards: the claim collision guard, then the role
+	# code guard. Both must pass, so it runs them in sequence and any non-zero
+	# exit aborts the commit (set -e). pre-push runs the single gate guard.
 	mkdir -p "$WRAP_DIR"
-	for pair in "pre-commit:pre-commit-claim" "pre-push:pre-push-gate"; do
-		name=${pair%%:*}
-		kit=${pair#*:}
-		cat > "$WRAP_DIR/$name" <<EOF
+	cat > "$WRAP_DIR/pre-commit" <<EOF
 #!/bin/sh
 # enforcement hook wrapper (installed by enforcement/install-hooks) -- do not edit.
-exec "$HOOKS_SRC/$kit" "\$@"
+set -e
+"$HOOKS_SRC/pre-commit-claim" "\$@"
+"$HOOKS_SRC/pre-commit-role" "\$@"
 EOF
-		chmod +x "$WRAP_DIR/$name" 2>/dev/null || true
-	done
+	chmod +x "$WRAP_DIR/pre-commit" 2>/dev/null || true
+	cat > "$WRAP_DIR/pre-push" <<EOF
+#!/bin/sh
+# enforcement hook wrapper (installed by enforcement/install-hooks) -- do not edit.
+exec "$HOOKS_SRC/pre-push-gate" "\$@"
+EOF
+	chmod +x "$WRAP_DIR/pre-push" 2>/dev/null || true
 	# Save any pre-existing core.hooksPath so --uninstall can restore it (M6). Only
 	# save when it points somewhere OTHER than our own wrapper dir, and only once
 	# (do not clobber a saved value on a re-run, which would lose the original).
@@ -168,26 +176,35 @@ fi
 
 # MODE = copy
 mkdir -p "$GIT_HOOKS"
-install_one() {
-	src="$1"; dest="$2"
-	# back up a pre-existing, non-kit hook once
+backup_existing() {  # backup_existing <dest>
+	dest="$1"
 	if [ -f "$dest" ] && ! grep -q "enforcement hook wrapper" "$dest" 2>/dev/null; then
 		if [ ! -f "$dest.pre-team.bak" ]; then
 			cp "$dest" "$dest.pre-team.bak"
 			echo "backed up existing $dest -> $dest.pre-team.bak"
 		fi
 	fi
-	# write a tiny wrapper that execs the kit hook, so updates to the kit hook
-	# take effect without re-copying, and so we can detect our own installs.
-	cat > "$dest" <<EOF
-#!/bin/sh
-# enforcement hook wrapper (installed by enforcement/install-hooks) -- do not edit.
-exec "$src" "\$@"
-EOF
-	chmod +x "$dest" 2>/dev/null || true
-	echo "installed (copy): $dest -> $src"
 }
 
-install_one "$HOOKS_SRC/pre-commit-claim" "$GIT_HOOKS/pre-commit"
-install_one "$HOOKS_SRC/pre-push-gate"   "$GIT_HOOKS/pre-push"
+# pre-commit chains the claim guard then the role guard (both must pass).
+backup_existing "$GIT_HOOKS/pre-commit"
+cat > "$GIT_HOOKS/pre-commit" <<EOF
+#!/bin/sh
+# enforcement hook wrapper (installed by enforcement/install-hooks) -- do not edit.
+set -e
+"$HOOKS_SRC/pre-commit-claim" "\$@"
+"$HOOKS_SRC/pre-commit-role" "\$@"
+EOF
+chmod +x "$GIT_HOOKS/pre-commit" 2>/dev/null || true
+echo "installed (copy): $GIT_HOOKS/pre-commit -> pre-commit-claim + pre-commit-role"
+
+# pre-push runs the single gate guard.
+backup_existing "$GIT_HOOKS/pre-push"
+cat > "$GIT_HOOKS/pre-push" <<EOF
+#!/bin/sh
+# enforcement hook wrapper (installed by enforcement/install-hooks) -- do not edit.
+exec "$HOOKS_SRC/pre-push-gate" "\$@"
+EOF
+chmod +x "$GIT_HOOKS/pre-push" 2>/dev/null || true
+echo "installed (copy): $GIT_HOOKS/pre-push -> pre-push-gate"
 echo "done."

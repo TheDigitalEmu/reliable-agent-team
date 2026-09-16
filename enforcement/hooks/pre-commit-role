@@ -1,0 +1,112 @@
+#!/bin/sh
+# ============================================================================
+# pre-commit-role : role-write guard (git pre-commit hook)
+# ----------------------------------------------------------------------------
+# ROADBLOCK REMOVED
+#   "The manager writes application code" (separation of duties). roles.md says
+#   the manager owns scope, delegation, tracking and gate enforcement, and
+#   WRITES docs, logs and ledgers, NEVER application code. That was prose only:
+#   nothing at commit time looked at the role, so a manager session committed
+#   every backend and frontend source file (the Ed incident, see a project's
+#   ATTRIBUTION-AUDIT). This hook makes the rule mechanical.
+#
+# THE RULE (owner, 2026-09-14)
+#   A manager may COMMIT anything. A manager may NOT commit CODE. So the block
+#   is on the NATURE OF THE FILE. A manager committing docs, ledgers, registers
+#   or notes passes; the instant a staged file IS code, the commit is refused.
+#   Only the manager role is affected; every other role passes untouched.
+#
+#   This is a BACKSTOP. The primary wall against a manager WRITING code is a
+#   PreToolUse hook on Edit/Write (see enforcement/hooks/deny-manager-code-write,
+#   wired into Claude settings), which refuses the write before it happens. This
+#   git hook catches anything that slips past that, at the last moment before it
+#   enters history. Two layers, because an agent that can talk past one wall
+#   should still hit the next.
+#
+# ROLE SOURCE
+#   enforcement/lib/resolve-role (whoami ROLE= line, or the .team/roles ledger).
+#   If the role cannot be resolved (a legacy whoami with no role), this hook
+#   FAILS OPEN: a bare session id is not evidence of a manager, and blocking
+#   every unlabelled session would break existing repos. new-session now records
+#   the role, so new sessions are covered.
+#
+# INSTALL   enforcement/install-hooks (chains this after the claim guard).
+#
+# CONFIGURE (env)
+#   TEAM_ROLE     force this session's role (wins; used by tests)
+#   TEAM_WHOAMI   whoami path (default .team/whoami)
+#   RESOLVE_ROLE  path to the resolver (default: alongside this hook)
+#
+# EXIT CODES
+#   0  allowed (not a manager, or no code staged, or role unknown -> fail open).
+#   4  BLOCKED: a manager session staged code.
+#   2  environment error (resolver missing, cannot read staged list).
+#
+# SELF-TEST (scratch repo)
+#   git init -q sandbox && cd sandbox && mkdir -p .team
+#   printf 'ed\nROLE=manager\n' > .team/whoami
+#   cp /path/to/pre-commit-role .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+#   echo x > notes.md && git add notes.md && git commit -m ok     # -> allowed
+#   echo x > app.js && git add app.js && git commit -m nope       # -> BLOCKED (4)
+#   printf 'dev\nROLE=developer\n' > .team/whoami
+#   git add app.js && git commit -m fine                          # -> allowed
+# ============================================================================
+
+set -eu
+
+PROG="$(basename "$0")"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+RESOLVE_ROLE="${RESOLVE_ROLE:-$HERE/../lib/resolve-role}"
+IS_CODE="${IS_CODE:-$HERE/../lib/is-code}"
+
+die() { code="$1"; shift; printf '%s\n' "$@" >&2; exit "$code"; }
+
+# --- resolve this session's role -------------------------------------------
+[ -f "$RESOLVE_ROLE" ] || die 2 \
+	"BLOCKED by $PROG: role resolver not found at $RESOLVE_ROLE (fail closed on setup error)." \
+	"Fix: run enforcement/install-hooks so the resolver is in place."
+ROLE=$(sh "$RESOLVE_ROLE" 2>/dev/null || true)
+
+# Only the manager role is restricted here. Any other role, or an unknown role
+# (legacy whoami with no ROLE=), passes: unknown fails OPEN by design.
+[ "$ROLE" = "manager" ] || exit 0
+
+# --- collect staged files ---------------------------------------------------
+STAGED=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR 2>/dev/null) \
+	|| die 2 "BLOCKED by $PROG: could not read the staged file list from git (fail closed)."
+[ -n "$STAGED" ] || exit 0
+
+# The "is this code" test is the SHARED classifier enforcement/lib/is-code, so
+# this backstop and the write wall (deny-manager-code-write) can never disagree
+# on what counts as code. See that file for the owner's decisions and the rule.
+[ -f "$IS_CODE" ] || die 2 \
+	"BLOCKED by $PROG: code classifier not found at $IS_CODE (fail closed on setup error)." \
+	"Fix: run enforcement/install-hooks so the lib is in place."
+is_code() { sh "$IS_CODE" "$1"; }
+
+BLOCKED_LIST=""
+IFS='
+'
+for f in $STAGED; do
+	[ -z "$f" ] && continue
+	if is_code "$f"; then
+		BLOCKED_LIST="${BLOCKED_LIST}  $f
+"
+	fi
+done
+unset IFS
+
+if [ -n "$BLOCKED_LIST" ]; then
+	printf '%s\n' \
+		"BLOCKED by $PROG (separation of duties): the manager role must not commit code." \
+		"Session role: manager. These staged files are code:" >&2
+	printf '%s' "$BLOCKED_LIST" >&2
+	printf '%s\n' \
+		"A manager commits docs, ledgers, registers and notes freely; code is the" \
+		"developer's to write and reviewer/security/qa's to gate. Delegate the code" \
+		"to a developer session. If this session is genuinely a developer, correct" \
+		"its ROLE= in .team/whoami. This is the Ed incident's guard." >&2
+	exit 4
+fi
+
+exit 0
