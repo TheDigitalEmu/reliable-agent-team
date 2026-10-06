@@ -46,7 +46,7 @@
 #   like  "| 5bdc076 | static | reviewer | PASS | reviewer |"  is a valid gate row.
 #
 #   RESERVED TRAILING CELLS (seam 2, agentic-discussion/0001-0003). This parser reads
-#   ONLY fields 1 to 5 via `cut -d'|' -fN` and never inspects anything after field 5, so a
+#   ONLY fields 1 to 5 (one awk split on '|') and never inspects anything after field 5, so a
 #   row MAY carry extra trailing pipe-delimited cells and they are ignored, not tripped over.
 #   A project may therefore attach its own cross-reference metadata as trailing key=value
 #   cells, for example:
@@ -201,19 +201,32 @@ sha_matches() {  # sha_matches <row_sha> <target_sha>
 # A row is: sha | class | gate | verdict | author. Emits normalised, trimmed fields as
 # TAB-separated: sha<TAB>class<TAB>gate<TAB>verdict<TAB>author. Only rows whose sha
 # matches the target (target is a prefix of the row sha, H1) are emitted.
+#
+# PERFORMANCE: the whole ledger is parsed in ONE awk pass (no per-row processes), and the
+# result is computed once and cached in LEDGER_ROWS. The awk program is the exact
+# equivalent of sha_matches above plus the per-field trim; only fields 1 to 5 are read,
+# so reserved trailing cells (seam 2) still pass through untouched.
+ledger_rows_compute() {
+  printf '%s\n' "$LEDGER_TEXT" | awk -v target="$SHA" '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    BEGIN { lt = tolower(target); nt = length(target) }
+    {
+      line = $0
+      if (line == "" || substr(line, 1, 1) == "#") next
+      sub(/^[ \t]*\|/, "", line)
+      n = split(line, f, "|")
+      if (n < 5) next
+      s = trim(f[1])
+      if (s ~ /[^0-9a-fA-F]/) next
+      if (length(s) < 7 || length(s) < nt) next
+      if (substr(tolower(s), 1, nt) != lt) next
+      printf "%s\t%s\t%s\t%s\t%s\n", s, trim(f[2]), trim(f[3]), trim(f[4]), trim(f[5])
+    }'
+}
+LEDGER_ROWS="$(ledger_rows_compute)"
 ledger_rows_for_sha() {
-  printf '%s\n' "$LEDGER_TEXT" | while IFS= read -r line; do
-    case "$line" in ''|\#*) continue ;; esac
-    line=$(printf '%s' "$line" | sed 's/^[ \t]*|//')
-    case "$line" in *\|*\|*\|*\|*) : ;; *) continue ;; esac
-    r_sha=$(printf '%s' "$line" | cut -d'|' -f1 | sed 's/^[ \t]*//; s/[ \t]*$//')
-    r_class=$(printf '%s' "$line" | cut -d'|' -f2 | sed 's/^[ \t]*//; s/[ \t]*$//')
-    r_gate=$(printf '%s' "$line" | cut -d'|' -f3 | sed 's/^[ \t]*//; s/[ \t]*$//')
-    r_verdict=$(printf '%s' "$line" | cut -d'|' -f4 | sed 's/^[ \t]*//; s/[ \t]*$//')
-    r_author=$(printf '%s' "$line" | cut -d'|' -f5 | sed 's/^[ \t]*//; s/[ \t]*$//')
-    sha_matches "$r_sha" "$SHA" || continue
-    printf '%s\t%s\t%s\t%s\t%s\n' "$r_sha" "$r_class" "$r_gate" "$r_verdict" "$r_author"
-  done
+  [ -n "$LEDGER_ROWS" ] || return 0
+  printf '%s\n' "$LEDGER_ROWS"
 }
 
 # SHA-only mode: derive the change class from the ledger rows for this SHA.
