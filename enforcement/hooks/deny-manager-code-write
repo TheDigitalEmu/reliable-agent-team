@@ -43,7 +43,7 @@
 # wall and the commit backstop can never disagree on what counts as code.
 #
 # SELF-TEST
-#   printf '{"tool_name":"Write","tool_input":{"file_path":"axiom-backend/src/x.js"}}' \
+#   printf '{"tool_name":"Write","tool_input":{"file_path":"backend/src/x.js"}}' \
 #     | TEAM_ROLE=manager sh deny-manager-code-write ; echo $?   # -> 2 (denied)
 #   printf '{"tool_name":"Write","tool_input":{"file_path":"docs/note.md"}}' \
 #     | TEAM_ROLE=manager sh deny-manager-code-write ; echo $?   # -> 0 (allowed)
@@ -91,15 +91,18 @@ fi
 # Only the manager is walled. Unknown role fails OPEN (same reason as the hook).
 [ "$ROLE" = "manager" ] || exit 0
 
-# Normalise a leading ./ and any absolute prefix down to a repo-relative-ish tail
-# so the classifier's globs match whether the tool passed an absolute or relative
-# path. Strip everything up to and including the last occurrence of a known repo
-# root marker if present; otherwise use the path as given.
+# Normalise a leading ./ and any absolute prefix down to a repo-relative tail so the
+# classifier's globs match whether the tool passed an absolute or relative path.
+# Generic: strip the git top-level directory if the path starts with it (core carries
+# no project folder names; a project's own trees are matched by is-code's generic
+# */src/* and extension globs, or by its .team/is-code.local override).
 REL="$FILE_PATH"
-case "$REL" in
-	*/axiom-backend/*) REL="axiom-backend/${REL#*/axiom-backend/}" ;;
-	*/axiom-frontend/*) REL="axiom-frontend/${REL#*/axiom-frontend/}" ;;
-esac
+TOP="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$TOP" ]; then
+	case "$REL" in
+		"$TOP"/*) REL="${REL#"$TOP"/}" ;;
+	esac
+fi
 REL="${REL#./}"
 
 if [ -f "$IS_CODE" ] && sh "$IS_CODE" "$REL"; then

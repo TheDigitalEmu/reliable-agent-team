@@ -62,7 +62,7 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
 }
 
 # The stack/project token list. Case-insensitive, ERE. Extend when a new profile adds a stack.
-TOKENS='gelball|supabase|next\.?js|\bnpm\b|\btsc\b|vercel|digitalocean|tailwind|\bCSP\b|\bRLS\b'
+TOKENS='gelball|axiom|hub-identity|supabase|next\.?js|\bnpm\b|\btsc\b|vercel|digitalocean|tailwind|\bCSP\b|\bRLS\b'
 
 # cwd is the kit dir, so git ls-files (with no pathspec) lists paths RELATIVE to the kit
 # dir: e.g. "scripts/done-check", "profiles/gelball.md". Exclusions are kit-relative too.

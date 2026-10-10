@@ -1,24 +1,26 @@
-# Profile: Axiom Apply (enrol.axiomcollege)
+# Profile: Project A (a compliance-bearing enrolment system)
 
-The project-specific half of the reliable-agent-team kit for the Axiom Apply build. Core reads none
-of this at runtime; it was resolved into this repo's `.team/` at install time (INSTALL.md Step 1b).
+A worked, filled profile from a real adoption, anonymised for the public kit: the client, its owner,
+its hosts and its repository names are replaced with placeholders. Everything else (the shape of the
+correctness bar, the gate commands, the model split, the domain policy) is as it ran. Core reads none
+of this at runtime; it was resolved into the project's `.team/` at install time (INSTALL.md Step 1b).
 
 ---
 
 ## PROJECT
-The rebuild of the Axiom College student application and enrolment system: a React front end
-(axiom-frontend) and a Node/Express API (axiom-backend) on self-hosted Supabase, replacing the live
-PHP/MySQL system at apply.axiomcollege.com.au. Repo: enrol.axiomcollege under the Axiom-College org.
+The rebuild of a vocational college's student application and enrolment system: a React front end
+(`frontend/`) and a Node/Express API (`backend/`) on a self-hosted PostgreSQL platform, replacing a
+live legacy PHP/MySQL system. Repo: `<org>/<enrolment-repo>`.
 
 ## OWNER
-Jamie (DigitalEmu). Also answers to Emu, DigitalEmu, Mu. The manager is the only agent that talks to
-the owner. Tamara co-owns the project and owns the Axiom-side decisions, reached through the
-`discussion/` folder, never as a live participant in this team.
+The build owner (the kit's user). The manager is the only agent that talks to the owner. A second,
+client-side owner holds the domain decisions and is reached through the `discussion/` folder, never
+as a live participant in this team.
 
 ## STACK
-Front end: React 19 with Vite, Tailwind, in `axiom-frontend`. Back end: Node 20, Express 4, in
-`axiom-backend`. Database: self-hosted Supabase (PostgreSQL) on an internal network, not a hosted
-supabase.com project. Hosting: pm2 fork mode behind nginx, one deployable. Tooling gates are Python
+Front end: React 19 with Vite and a utility CSS framework, in `frontend/`. Back end: Node 20,
+Express 4, in `backend/`. Database: self-hosted PostgreSQL on an internal network, not a hosted
+service. Hosting: a process manager behind a reverse proxy, one deployable. Tooling gates are Python
 (the doc/test/discussion gates) run with `py` on Windows. Platform is Windows; scripts run under
 Git's `sh`.
 
@@ -29,7 +31,7 @@ Git's `sh`.
   `npm run lint:css` and `npm run build`, each exit 0.
 - No em dash or dash look-alike anywhere (owner rule, enforced by the doc gate on docs; hold the same
   line in code and comments).
-- No hard-coded colour value outside `axiom-frontend/src/tokens.css` (rule 8, enforced by the colour
+- No hard-coded colour value outside `frontend/src/tokens.css` (rule 8, enforced by the colour
   lint).
 - RBAC and input validation enforced server-side on every request (rule 9); client checks are
   supplementary only.
@@ -53,8 +55,8 @@ py tools/validate-discussion.py
 ```
 
 Note on the code gates: the backend and frontend lint/test/build commands are per-folder (they must
-run inside `axiom-backend` or `axiom-frontend`), so they are not global `done-extra` lines. They run
-in CI (`.github/workflows/validate-code.yml`) and are part of the qa gate's checklist rather than the
+run inside `backend/` or `frontend/`), so they are not global `done-extra` lines. They run in CI
+(`.github/workflows/validate-code.yml`) and are part of the qa gate's checklist rather than the
 repo-root done-check. Add them as `done-extra` lines only if done-check is taught to run per-folder.
 
 ## PROJECT SCRIPTS
@@ -67,11 +69,11 @@ when it carries a decision id; the doc gate already enforces that, so the token 
 stray developer notes leaking into user-facing copy or generated content.
 
 ## MODEL ASSIGNMENT
-Strong model: manager, architect, developer, reviewer, security. This is a compliance-bearing RTO
-system where a wrong data model or a missed regulatory requirement is costly, so reasoning roles stay
-strong. Cheaper model: qa, where the work is mechanical and self-verifying (run the build, run the
-suite, check routes, read exit codes). Revisit if a cheaper model proves unreliable on the a11y and
-contrast checks.
+Strong model: manager, architect, developer, reviewer, security. This is a compliance-bearing
+training-provider system where a wrong data model or a missed regulatory requirement is costly, so
+reasoning roles stay strong. Cheaper model: qa, where the work is mechanical and self-verifying (run
+the build, run the suite, check routes, read exit codes). Revisit if a cheaper model proves
+unreliable on the a11y and contrast checks.
 
 ## PROJECT HOOKS
 Core ships pre-commit-claim and pre-push-gate only. This project already runs its own CI gates via
@@ -80,12 +82,13 @@ by core. No additional local git hook is added at install time. A local em-dash 
 exists in the owner's environment (a harness rule); it is environmental, not part of this kit.
 
 ## LEGAL / DOMAIN POLICY
-Compliance is the floor and is never traded (rule 16): AVETMISS, the Standards for RTOs 2025, the USI
-Act, the Australian Privacy Principles, and state funding contract conditions. Where a requirement is
-ambiguous, the safe reading is taken. A stated decision that conflicts with a requirement is not
-recorded at all until the owner restates it. No AI component ever receives the sensitive fields listed
-in rule 13. Every decision the build relies on must exist in `docs/decisions/decision-register.md`
-with its reasoning and source (governance: the repository is the only memory).
+Compliance is the floor and is never traded (rule 16): the national VET data standard, the
+regulator's standards for training providers, the student identifier legislation, the national
+privacy principles, and state funding contract conditions. Where a requirement is ambiguous, the safe
+reading is taken. A stated decision that conflicts with a requirement is not recorded at all until
+the owner restates it. No AI component ever receives the sensitive fields listed in rule 13. Every
+decision the build relies on must exist in `docs/decisions/decision-register.md` with its reasoning
+and source (governance: the repository is the only memory).
 
 ## RESERVED-CELL CONVENTION
 Gate rows may carry a trailing `ref=` cell pointing at a decision id (D-nn), a test id (T-nnn), or a
