@@ -24,7 +24,10 @@ DB query), because the board is reconciled against reality, not trusted on its l
 
 ## Machine-read format (the binding contract with the scripts)
 
-`scripts/done-check` and `scripts/reconcile` read each board row by splitting it on `|` and pulling
+`scripts/done-check`, `scripts/reconcile` and `scripts/gate-check` read each board row through one
+shared parser (`enforcement/lib/board-cells.sh`). A markdown table row like the examples below (a
+leading `|`, machine cells separated by `\|`) and a plain pipe line (`T1 | class=static | status=done`)
+read identically: the parser drops the table pipe and the markdown escape, trims every cell, and pulls
 `key=value` tokens. So every row MUST carry its machine fields as key=value cells, in ANY order. The
 scripts read these keys: `class=`, `status=`, `author=`, `artifact=` (yes|no), `url=` or `path=`,
 `sha=`. The first cell is the human task id/name and is matched by the task id you pass to the script.

@@ -82,9 +82,10 @@ fi
 HOOKS_OK=0
 HP="$(git config --get core.hooksPath 2>/dev/null || true)"
 if [ -n "$HP" ]; then
-  # Resolve relative to repo root.
+  # Resolve relative to repo root. Absolute means /x on POSIX, or X:\x and X:/x on
+  # Windows Git Bash (a drive path used to be read as relative and reported as missing).
   ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
-  case "$HP" in /*) HPD="$HP" ;; *) HPD="$ROOT/$HP" ;; esac
+  case "$HP" in /*|[A-Za-z]:[\\/]*) HPD="$HP" ;; *) HPD="$ROOT/$HP" ;; esac
   if [ -d "$HPD" ] && ls "$HPD" 2>/dev/null | grep -q .; then
     note_ok "hooks: core.hooksPath -> $HP (populated)"
     HOOKS_OK=1

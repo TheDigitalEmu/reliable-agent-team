@@ -263,13 +263,19 @@ esac
 if [ "$AUTHOR_GIVEN" -eq 0 ]; then
   [ -n "$BOARD" ] || { [ -f ".team/TASKS.md" ] && BOARD=".team/TASKS.md"; } || true
   if [ -n "$BOARD" ] && [ -f "$BOARD" ]; then
+    # Rows are split by the shared normaliser (markdown table rows and plain pipe lines
+    # read the same; a bare split used to leave "author=developer \" and defeat the
+    # self-sign-off compare below). See enforcement/lib/board-cells.sh.
+    _gc_self_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+    # shellcheck source=../enforcement/lib/board-cells.sh
+    . "${BOARD_CELLS:-$_gc_self_dir/../enforcement/lib/board-cells.sh}"
     # First non-comment board line mentioning this SHA (empty if none matches).
     board_line=$(grep -v '^[[:space:]]*#' "$BOARD" 2>/dev/null \
       | grep -F "$SHA" 2>/dev/null | head -n1 || true)
     if [ -n "${board_line:-}" ]; then
       # A board row is bound to this SHA: its author MUST resolve, or we fail closed.
       board_author=$(printf '%s' "$board_line" \
-        | tr '|' '\n' | sed 's/^[ \t]*//; s/[ \t]*$//' \
+        | board_cells \
         | grep -E '^author=' | head -n1 | sed 's/^author=//' \
         | sed 's/^[ \t]*//; s/[ \t]*$//')
       if [ -n "${board_author:-}" ]; then

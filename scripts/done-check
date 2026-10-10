@@ -159,6 +159,12 @@ done
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die 2 "not inside a git repository"
 
 # ---- read fields from the board for anything not given on the command line ----
+# Rows are split by the shared normaliser so markdown table rows (the shipped template)
+# and plain pipe lines read the same. See enforcement/lib/board-cells.sh.
+DC_SELF_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck source=../enforcement/lib/board-cells.sh
+. "${BOARD_CELLS:-$DC_SELF_DIR/../enforcement/lib/board-cells.sh}"
+
 field_from_board() {  # field_from_board <key>
   key="$1"
   [ -n "$TASKS" ] && [ -f "$TASKS" ] || return 0
@@ -166,8 +172,7 @@ field_from_board() {  # field_from_board <key>
   grep -v '^[[:space:]]*#' "$TASKS" 2>/dev/null \
     | grep -F "$TASK" 2>/dev/null \
     | head -n1 \
-    | tr '|' '\n' \
-    | sed 's/^[ \t]*//; s/[ \t]*$//' \
+    | board_cells \
     | grep -E "^${key}=" \
     | head -n1 \
     | sed "s/^${key}=//"

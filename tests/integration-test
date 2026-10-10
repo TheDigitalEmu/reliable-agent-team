@@ -631,6 +631,58 @@ else
 	bad "VCONS version surfaces disagree with VERSION (run scripts/version-consistency-check)"
 fi
 
+# ---------------------------------------------------------------- TPL (template row format)
+# templates/TASKS.md ships board rows as markdown table rows: a leading "|" and "\|"
+# between the machine cells. Every parser used to split on a bare "|" and keep the
+# backslash, so "author=me \" never equalled "me" (a self-signed PASS slipped the
+# push-time check), "status=done \" matched no status (reconcile re-verified nothing
+# and printed clean) and "class=static \" was an unknown class. Bug report 2026-10-11,
+# kit 1.0.0. These cases feed the template's EXACT row form to the real scripts.
+RECONCILE="$KIT_DIR/scripts/reconcile"
+tpl_row() {  # tpl_row <status> <author> <sha>  (the template's own cell layout)
+	printf '| T1-nav-widget (EXAMPLE) | class=static \\| status=%s \\| author=%s \\| sha=%s \\| artifact=no | prose cell |\n' "$1" "$2" "$3"
+}
+# (a) gate-check, SHA-only mode: self-signed PASS must still be caught with a template row.
+setup_repo tpla
+echo hi > tpla.txt
+git_quiet add tpla.txt
+git_quiet commit -m "work by me tpla"
+HEAD_SHA=$(git rev-parse HEAD)
+seed_gate "$HEAD_SHA" static reviewer PASS me
+tpl_row done me "$HEAD_SHA" >> "$REPO/.team/TASKS.md"
+if sh "$GATE_CHECK" --sha "$HEAD_SHA" --class static --board "$REPO/.team/TASKS.md" --ledger "$REPO/.team/GATES.md" >/dev/null 2>&1; then
+	bad "TPL1 template-format board row let a self-signed PASS through (author read with a trailing backslash)"
+else
+	ok "TPL1 template-format board row: self-signed PASS blocked (author=me read cleanly)"
+fi
+# (b) reconcile + done-check on a template row with status=done: the row must be
+# re-verified (not skipped) and done-check must read class= from the board and reach DONE.
+setup_repo tplb
+echo hi > tplb.txt
+git_quiet add tplb.txt
+git_quiet commit -m "work tplb"
+HEAD_SHA=$(git rev-parse HEAD)
+seed_gate "$HEAD_SHA" static reviewer PASS reviewer
+tpl_row done me "$HEAD_SHA" >> "$REPO/.team/TASKS.md"
+git push origin HEAD:refs/heads/main >/dev/null 2>&1 || true
+RC_OUT=$(sh "$RECONCILE" --tasks "$REPO/.team/TASKS.md" --ledger "$REPO/.team/GATES.md" --branch main 2>&1 || true)
+if printf '%s' "$RC_OUT" | grep -q '1 re-verified, 0 failed'; then
+	ok "TPL2 reconcile re-verifies a template-format status=done row (not a silent no-op)"
+else
+	bad "TPL2 reconcile skipped the template-format row: $(printf '%s' "$RC_OUT" | tail -n1)"
+fi
+if printf '%s' "$RC_OUT" | grep -q '>> T1-nav-widget (EXAMPLE) '; then
+	ok "TPL2 reconcile takes the task id from the first non-empty cell, spaces intact"
+else
+	bad "TPL2 reconcile mis-read the task id from a leading table pipe"
+fi
+DC_OUT=$(sh "$DONE_CHECK" --task "T1-nav-widget (EXAMPLE)" --tasks "$REPO/.team/TASKS.md" --branch main --no-artifact --ledger "$REPO/.team/GATES.md" 2>&1 || true)
+if printf '%s' "$DC_OUT" | grep -q 'DONE' && ! printf '%s' "$DC_OUT" | grep -qi 'unknown class'; then
+	ok "TPL3 done-check reads class= from a template-format row and reaches DONE"
+else
+	bad "TPL3 done-check could not read the template-format row: $(printf '%s' "$DC_OUT" | grep -i 'BLOCK\|unknown' | head -n1)"
+fi
+
 # ---------------------------------------------------------------- verdict
 printf '\nintegration-test: %d passed, %d failed\n' "$PASS_N" "$FAIL_N"
 [ "$FAIL_N" -eq 0 ] || exit 1

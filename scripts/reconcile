@@ -15,21 +15,22 @@
 # BOARD FORMAT (same board scripts/done-check reads, default .team/TASKS.md)
 #   One task per line. reconcile only needs to know a line's task id and its status, plus
 #   the same fields done-check consumes (class=, author=, url=, path=, artifact=, sha=).
-#   Status is a pipe field:  status=in-flight | status=done | status=blocked | status=todo
+#   Status is a pipe field:  status=in-progress | status=done | status=blocked | status=todo
+#   (templates/TASKS.md is the vocabulary of record; in-flight is kept as an alias)
 #   Lines starting '#' and blank lines are ignored.
 #
-#   By default reconcile re-verifies rows with status=in-flight or status=done.
-#   Rationale: in-flight items may have quietly stalled or already met done; done items may
+#   By default reconcile re-verifies rows with status=in-progress (or in-flight) or status=done.
+#   Rationale: in-progress items may have quietly stalled or already met done; done items may
 #   have drifted (a later commit invalidated the gate, origin rewound, the URL went down).
 #
 #   Example board lines:
 #     T41-example-a | class=auth-data-input | author=alice | status=done | url=https://example.test/account
-#     T42-example-b | class=static | author=bob | status=in-flight | url=https://example.test/page
+#     T42-example-b | class=static | author=bob | status=in-progress | url=https://example.test/page
 # ---------------------------------------------------------------------------
 #
 # USAGE
 #   reconcile [--tasks <path>] [--ledger <path>] [--branch <branch>]
-#             [--status <csv>]   (default: in-flight,done)
+#             [--status <csv>]   (default: in-progress,in-flight,done)
 #             [--only-done]      (re-verify only status=done rows; strict drift audit)
 #   reconcile -h | --help
 #
@@ -53,7 +54,7 @@ die()  { code="$1"; shift; printf '%s: %s\n' "$PROG" "$*" >&2; exit "$code"; }
 TASKS=""
 LEDGER=""
 BRANCH=""
-STATUSES="in-flight,done"
+STATUSES="in-progress,in-flight,done"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -85,10 +86,15 @@ status_wanted() {
   return 1
 }
 
+# Rows are split by the shared normaliser so markdown table rows (the shipped template)
+# and plain pipe lines read the same. See enforcement/lib/board-cells.sh.
+RC_SELF_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck source=../enforcement/lib/board-cells.sh
+. "${BOARD_CELLS:-$RC_SELF_DIR/../enforcement/lib/board-cells.sh}"
+
 # Pull a pipe field key=value from a single board line.
 line_field() {  # line_field <line> <key>
-  printf '%s' "$1" | tr '|' '\n' \
-    | sed 's/^[ \t]*//; s/[ \t]*$//' \
+  printf '%s' "$1" | board_cells \
     | grep -E "^$2=" | head -n1 | sed "s/^$2=//"
 }
 
@@ -109,20 +115,21 @@ while IFS= read -r line || [ -n "$line" ]; do
   TOTAL=$((TOTAL + 1))
   status_wanted "$st" || continue
 
-  # First whitespace/pipe token is the task id.
-  tid="$(printf '%s' "$line" | sed 's/[ \t]*|.*//; s/^[ \t]*//; s/[ \t]*$//')"
+  # First non-empty cell is the task id (a leading markdown table "|" is not a cell).
+  tid="$(printf '%s' "$line" | board_task_id)"
   [ -n "$tid" ] || tid="$(printf '%s' "$line" | awk '{print $1}')"
 
   CHECKED=$((CHECKED + 1))
   printf '\n>> %s (status=%s)\n' "$tid" "$st"
 
-  DC_ARGS="--task $tid --tasks $TASKS"
-  [ -n "$LEDGER" ] && DC_ARGS="$DC_ARGS --ledger $LEDGER"
-  [ -n "$BRANCH" ] && DC_ARGS="$DC_ARGS --branch $BRANCH"
+  # Arguments are passed as a list, not a word-split string, so a task id or path with
+  # spaces (the template's "T1-nav-widget (EXAMPLE)") reaches done-check intact.
+  set -- --task "$tid" --tasks "$TASKS"
+  [ -n "$LEDGER" ] && set -- "$@" --ledger "$LEDGER"
+  [ -n "$BRANCH" ] && set -- "$@" --branch "$BRANCH"
 
   set +e
-  # shellcheck disable=SC2086
-  OUT="$(sh "$DC" $DC_ARGS 2>&1)"
+  OUT="$(sh "$DC" "$@" 2>&1)"
   RC=$?
   set -e
   printf '%s\n' "$OUT" | sed 's/^/   /'
