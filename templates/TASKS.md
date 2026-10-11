@@ -30,7 +30,9 @@ leading `|`, machine cells separated by `\|`) and a plain pipe line (`T1 | class
 read identically: the parser drops the table pipe and the markdown escape, trims every cell, and pulls
 `key=value` tokens. So every row MUST carry its machine fields as key=value cells, in ANY order. The
 scripts read these keys: `class=`, `status=`, `author=`, `artifact=` (yes|no), `url=` or `path=`,
-`sha=`. The first cell is the human task id/name and is matched by the task id you pass to the script.
+`sha=`, and optionally `model=` (the model that did the work; with `TEAM_DISTINCT_MODEL=1` a gate
+PASS from the same model is refused). The first cell is the human task id/name and is matched by
+the task id you pass to the script.
 Human-readable prose can live in extra cells; the scripts ignore any cell that is not a known
 key=value. This keeps ONE board that both a human and the parser read. Do not move the machine fields
 into a separate file, and do not drop the `key=` prefixes: a bare column is invisible to the scripts.

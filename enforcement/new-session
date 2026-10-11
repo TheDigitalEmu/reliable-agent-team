@@ -20,7 +20,11 @@
 #      (default .team/SESSIONS.md) if the session has no active row yet.
 #
 # USAGE
-#   enforcement/new-session <session-name> <branch> [worktree-path] [claim-glob]
+#   enforcement/new-session --role <role> <session-name> <branch> [worktree-path] [claim-glob]
+#     --role         REQUIRED (1.1.0): manager | architect | researcher | developer |
+#                    security | reviewer | qa. Written to the worktree's .team/whoami
+#                    as ROLE= and appended to the shared .team/roles ledger, which
+#                    gate-check and the role guards read. Also accepted as $TEAM_ROLE.
 #     session-name   short id for this agent session (e.g. dev-navbar)
 #     branch         branch to check out in the new worktree (created if new)
 #     worktree-path  where to place the worktree (default: ../<repo>-<session>)
@@ -80,8 +84,12 @@ if [ -z "$BRANCH" ]; then
 fi
 
 ROLE=$(printf '%s' "$ROLE" | tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+# 1.1.0: the role is REQUIRED. A session with no role resolves to unknown, and every
+# role guard fails open on unknown; for four weeks on one adoption no session had a
+# role and no guard ever fired (field review 0008, 3B). Declare it or do not start.
 case "$ROLE" in
-	""|manager|architect|researcher|developer|security|reviewer|qa) : ;;
+	manager|architect|researcher|developer|security|reviewer|qa) : ;;
+	"") echo "error: --role is required (manager architect researcher developer security reviewer qa). Without it no role guard can act." >&2; exit 2 ;;
 	*) echo "error: --role must be one of manager architect researcher developer security reviewer qa (got '$ROLE')." >&2; exit 2 ;;
 esac
 
@@ -171,12 +179,29 @@ fi
 # write wall and commit backstop key on. An omitted role leaves the file in the
 # legacy single-line form, which resolves to an unknown role (hooks fail open).
 mkdir -p "$WORKTREE_PATH/.team"
-if [ -n "$ROLE" ]; then
-	printf '%s\nROLE=%s\n' "$SESSION" "$ROLE" > "$WORKTREE_PATH/.team/whoami"
-	echo "wrote $WORKTREE_PATH/.team/whoami ($SESSION, role=$ROLE)"
+printf '%s\nROLE=%s\n' "$SESSION" "$ROLE" > "$WORKTREE_PATH/.team/whoami"
+echo "wrote $WORKTREE_PATH/.team/whoami ($SESSION, role=$ROLE)"
+
+# --- 2b. record the session's role in the SHARED roles ledger -----------------
+# gate-check resolves a PASS author's role from this ledger (a manager PASS is
+# refused; once the ledger exists an unlisted author fails closed), and the
+# server-side check reads it from the pushed tip. So the row must be committed
+# with the ledger commit, like every other .team row.
+ROLES_LEDGER="${TEAM_ROLES:-$MAIN_ROOT/.team/roles}"
+mkdir -p "$(dirname "$ROLES_LEDGER")"
+if [ ! -f "$ROLES_LEDGER" ]; then
+	printf '| session | role |\n|---|---|\n' > "$ROLES_LEDGER"
+	echo "created roles ledger $ROLES_LEDGER"
+fi
+existing_role=$(TEAM_ROLES="$ROLES_LEDGER" sh "$(dirname -- "$0")/lib/resolve-role" "$SESSION" 2>/dev/null || true)
+if [ -z "$existing_role" ]; then
+	printf '| %s | %s |\n' "$SESSION" "$ROLE" >> "$ROLES_LEDGER"
+	echo "appended role row '$SESSION | $ROLE' to $ROLES_LEDGER (commit it with the ledger)"
+elif [ "$existing_role" != "$ROLE" ]; then
+	echo "error: session '$SESSION' is already recorded as role '$existing_role' in $ROLES_LEDGER; a role does not change mid-life. Use a new session id." >&2
+	exit 2
 else
-	printf '%s\n' "$SESSION" > "$WORKTREE_PATH/.team/whoami"
-	echo "wrote $WORKTREE_PATH/.team/whoami ($SESSION, no role declared)"
+	echo "roles ledger already records '$SESSION | $ROLE' (leaving it)"
 fi
 
 # --- 3. append a claim row to the shared ledger (idempotent) ----------------

@@ -1,0 +1,241 @@
+#!/bin/sh
+# gate-check-range : gate every commit in a range against the ledger AT THE PUSHED TIP.
+#
+# ROADBLOCKS REMOVED (field review 0008, sections 3A.1 to 3A.3)
+#   - "The push gate is per clone": a tip-only hook gates the one commit it sees, so a
+#     commit that reached the main line by another path, or sat between two gated tips,
+#     was never checked. This checks EVERY commit in base..tip, first-parent, and the same
+#     script runs on the server (ci/github/gate-check.yml), so the rule is the same
+#     everywhere.
+#   - "Working tree versus committed tip": the hook read the ledger from the working tree,
+#     so sessions held the ledger uncommitted and the server saw nothing. The ledger of
+#     record is .team/ AT THE TIP COMMIT, read with git show, never the working tree
+#     (override only for a transition: --ledger-source worktree).
+#   - "The ledger commit needs its own hollow row": a commit that changes only paths under
+#     the team dir is EXEMPT (it is the ledger commit recording the gates of the code
+#     commits before it), and so is a commit whose tree equals its first parent's. The
+#     manager never again writes a self-signed PASS for its own ledger commit.
+#
+# THE PUSH CONVENTION THIS ENFORCES (OPERATING.md, "Pushing to the main line")
+#   1. code commits (each gated: rows in the ledger bound to its full SHA)
+#   2. ONE .team-only ledger commit on top, carrying those rows
+#   3. push. The range remote..tip is checked against the ledger at the tip.
+#
+# USAGE
+#   gate-check-range --tip <sha> [--base <sha>] [--candidates <file>] [--baseline <sha>]
+#                    [--allow-tip-only] [--team-dir <dir>] [--ledger-source tip|worktree]
+#                    [--gate-check <path>]
+#   gate-check-range -h | --help
+#
+#   --tip         the commit being pushed (required; must exist locally).
+#   --base        the remote's current tip (the pre-push hook passes remote_sha). Used when
+#                 it is a real commit and an ancestor of the tip.
+#   --candidates  a file of earlier GREEN tips, one SHA per line, newest first (CI writes it
+#                 from the Actions API). The first that is a strict ancestor of the tip is the
+#                 base, so a red push is re-checked by the next push, never skipped.
+#   --baseline    the last commit before range gating was enforced in this repo (also env
+#                 TEAM_GATE_BASELINE). Used when nothing above gives a base. A retrofit sets
+#                 this once so history before adoption is never gated.
+#   --allow-tip-only
+#                 with NO usable base (first push of the branch, force push over an unknown
+#                 tip, and no baseline), check ONLY the tip and say so loudly. The pre-push
+#                 hook passes this so a brand-new repository can make its first push; CI does
+#                 not pass it and fails closed instead.
+#   --team-dir    the team directory inside the repo (default .team, or TEAM_DIR).
+#   --ledger-source
+#                 tip (default): GATES.md, TASKS.md and roles are read from the TIP COMMIT.
+#                 worktree: read from the working tree (transition only; the server cannot
+#                 see your working tree, so a push that passes here can still go red there).
+#   --gate-check  path to scripts/gate-check (default: alongside this script).
+#
+# EXEMPT COMMITS (printed as "skip", never checked)
+#   - team-only : every changed path (against the first parent) is under the team dir.
+#   - identical : the commit's tree equals its first parent's (nothing to gate).
+#   A merge commit is checked once, against its first parent, so a gated merge covers the
+#   commits it brought in; the branch's own commits are not walked (--first-parent).
+#
+# EXIT CODES
+#   0  every commit in the range is cleared or exempt.
+#   1  at least one commit is ungated, blocked, self-signed or unknown-authored.
+#   2  usage or environment error: not a repo, tip missing, no ledger at the tip, no usable
+#      base without --allow-tip-only. Fails closed.
+#
+# OUTPUT
+#   One line per commit: "PASS  <sha12> <subject>", "skip  <sha12> team-only|identical ...",
+#   or "FAIL  <sha12> <subject>" followed by gate-check's BLOCK lines indented.
+#
+# HOW TO TEST
+#   tests/integration-test drives this through the real pre-push hook (R1 to R6) and directly.
+
+set -eu
+
+PROG="$(basename "$0")"
+usage() { sed -n '2,62p' "$0" | sed 's/^# \{0,1\}//'; }
+die() { code="$1"; shift; printf '%s: %s\n' "$PROG" "$*" >&2; exit "$code"; }
+
+TIP=""; BASE=""; CANDIDATES=""; BASELINE="${TEAM_GATE_BASELINE:-}"
+ALLOW_TIP_ONLY=0
+TEAMDIR="${TEAM_DIR:-.team}"
+SOURCE="${TEAM_GATE_LEDGER_SOURCE:-tip}"
+SELF_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+GATE_CHECK="${TEAM_GATE_CHECK:-$SELF_DIR/gate-check}"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --tip)            TIP="${2:-}"; shift 2 ;;
+    --base)           BASE="${2:-}"; shift 2 ;;
+    --candidates)     CANDIDATES="${2:-}"; shift 2 ;;
+    --baseline)       BASELINE="${2:-}"; shift 2 ;;
+    --allow-tip-only) ALLOW_TIP_ONLY=1; shift ;;
+    --team-dir)       TEAMDIR="${2:-}"; shift 2 ;;
+    --ledger-source)  SOURCE="${2:-}"; shift 2 ;;
+    --gate-check)     GATE_CHECK="${2:-}"; shift 2 ;;
+    *) die 2 "unknown argument: $1 (try --help)" ;;
+  esac
+done
+
+[ -n "$TIP" ] || die 2 "missing --tip (the commit being pushed)"
+[ -f "$GATE_CHECK" ] || die 2 "gate-check not found at $GATE_CHECK (set --gate-check or TEAM_GATE_CHECK)"
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die 2 "not inside a git repository"
+case "$SOURCE" in tip|worktree) : ;; *) die 2 "--ledger-source must be tip or worktree (got $SOURCE)" ;; esac
+TEAMDIR="${TEAMDIR%/}"
+
+ZERO="0000000000000000000000000000000000000000"
+is_commit() {  # is_commit <rev>: a real commit present locally (a sha, HEAD, a ref); never the zero sha
+  [ -n "${1:-}" ] || return 1
+  case "$1" in 0000000*) return 1 ;; esac
+  git rev-parse -q --verify "$1^{commit}" >/dev/null 2>&1
+}
+is_ancestor() { git merge-base --is-ancestor "$1" "$2" 2>/dev/null; }
+
+is_commit "$TIP" || die 2 "tip $TIP is not a commit in this repository"
+TIP="$(git rev-parse "$TIP^{commit}")"
+
+# ---------------------------------------------------------------- choose the base
+BASE_FROM=""
+if is_commit "$BASE" && is_ancestor "$BASE" "$TIP" && [ "$(git rev-parse "$BASE^{commit}")" != "$TIP" ]; then
+  BASE="$(git rev-parse "$BASE^{commit}")"; BASE_FROM="the remote tip"
+else
+  BASE=""
+  if [ -n "$CANDIDATES" ] && [ -f "$CANDIDATES" ]; then
+    while IFS= read -r c || [ -n "$c" ]; do
+      c=$(printf '%s' "$c" | tr -d ' \t\r')
+      [ -n "$c" ] || continue
+      is_commit "$c" || continue
+      [ "$(git rev-parse "$c^{commit}")" != "$TIP" ] || continue
+      if is_ancestor "$c" "$TIP"; then BASE="$(git rev-parse "$c^{commit}")"; BASE_FROM="the last green run"; break; fi
+    done < "$CANDIDATES"
+  fi
+  if [ -z "$BASE" ] && is_commit "$BASELINE" && is_ancestor "$BASELINE" "$TIP"; then
+    BASE="$(git rev-parse "$BASELINE^{commit}")"; BASE_FROM="the baseline"
+  fi
+fi
+
+# ---------------------------------------------------------------- ledger of record
+WORK="$(mktemp -d 2>/dev/null)" || die 2 "cannot create a temp dir"
+trap 'rm -rf "$WORK"' EXIT INT TERM
+
+extract() {  # extract <path-in-repo> <out-file>: git show at the tip; 1 if absent
+  git show "$TIP:$1" > "$2" 2>/dev/null
+}
+
+LEDGER=""; BOARD=""; ROLES=""
+if [ "$SOURCE" = "worktree" ]; then
+  if   [ -f "$TEAMDIR/GATES.md" ]; then LEDGER="$TEAMDIR/GATES.md"
+  elif [ -d "$TEAMDIR/gates" ];    then LEDGER="$TEAMDIR/gates"
+  fi
+  [ -f "$TEAMDIR/TASKS.md" ] && BOARD="$TEAMDIR/TASKS.md"
+  [ -f "$TEAMDIR/roles" ]    && ROLES="$TEAMDIR/roles"
+  printf '%s: WARNING: reading the ledger from the WORKING TREE, not the tip commit. The server\n' "$PROG" >&2
+  printf '%s:          cannot see your working tree; commit the ledger before relying on this.\n' "$PROG" >&2
+else
+  if extract "$TEAMDIR/GATES.md" "$WORK/GATES.md"; then
+    LEDGER="$WORK/GATES.md"
+  else
+    # Directory mode (rotated ledgers): every *.md / *.tsv under <teamdir>/gates/ at the tip.
+    mkdir -p "$WORK/gates"
+    git ls-tree --name-only "$TIP" "$TEAMDIR/gates/" 2>/dev/null | while IFS= read -r p; do
+      case "$p" in *.md|*.tsv) git show "$TIP:$p" > "$WORK/gates/$(basename "$p")" 2>/dev/null || true ;; esac
+    done
+    if ls "$WORK/gates" 2>/dev/null | grep -q .; then LEDGER="$WORK/gates"; fi
+  fi
+  extract "$TEAMDIR/TASKS.md" "$WORK/TASKS.md" && BOARD="$WORK/TASKS.md" || true
+  extract "$TEAMDIR/roles"    "$WORK/roles"    && ROLES="$WORK/roles"    || true
+fi
+
+[ -n "$LEDGER" ] || die 2 "no gate ledger at the tip commit ($TIP:$TEAMDIR/GATES.md or $TEAMDIR/gates/). The ledger of record is the committed one: commit .team (a .team-only commit on top of the code commits) and push again."
+
+# ---------------------------------------------------------------- exemptions
+# exempt_reason <sha>: prints "identical" (tree equals the first parent's), "team-only"
+# (every changed path is under the team dir), or nothing (the commit must be gated).
+exempt_reason() {
+  parent="$(git rev-parse -q --verify "$1^" 2>/dev/null || true)"
+  if [ -n "$parent" ]; then
+    changed="$(git diff-tree -r --name-only --no-commit-id --no-renames "$parent" "$1")"
+  else
+    changed="$(git diff-tree -r --root --name-only --no-commit-id "$1")"
+  fi
+  if [ -z "$changed" ]; then printf 'identical'; return 0; fi
+  if ! printf '%s\n' "$changed" | grep -v "^$TEAMDIR/" | grep -q .; then printf 'team-only'; return 0; fi
+  printf ''
+}
+
+# ---------------------------------------------------------------- the commits to check
+if [ -n "$BASE" ]; then
+  printf '%s: checking %s..%s (base from %s), ledger from the %s\n' "$PROG" "$(printf '%.12s' "$BASE")" "$(printf '%.12s' "$TIP")" "$BASE_FROM" "$SOURCE"
+  COMMITS="$(git rev-list --reverse --first-parent "$BASE..$TIP")"
+elif [ "$ALLOW_TIP_ONLY" -eq 1 ]; then
+  printf '%s: WARNING: no usable base (first push, unknown remote tip, or no baseline). Checking the TIP ONLY.\n' "$PROG" >&2
+  printf '%s:          Set TEAM_GATE_BASELINE to the last pre-adoption commit so every later commit is covered.\n' "$PROG" >&2
+  # The tip is usually the exempt .team-only ledger commit. "Tip only" therefore means
+  # the nearest NON-exempt commit on the first-parent line (the last code commit), so
+  # an exempt tip can never make a first push pass with nothing checked.
+  COMMITS=""
+  for c in $(git rev-list --first-parent --max-count=50 "$TIP"); do
+    if [ -z "$(exempt_reason "$c")" ]; then COMMITS="$c"; break; fi
+  done
+  [ -n "$COMMITS" ] || COMMITS="$TIP"
+else
+  die 2 "no usable base: --base is not an ancestor of the tip, no candidate green tip is, and no baseline applies (set TEAM_GATE_BASELINE or pass --baseline). Failing closed."
+fi
+
+CHECKED=0; SKIPPED=0; FAILED=0; FAIL_LIST=""
+for c in $COMMITS; do
+  subject="$(git log -1 --format=%s "$c" | cut -c1-70)"
+  short="$(printf '%.12s' "$c")"
+  why="$(exempt_reason "$c")"
+  if [ "$why" = "identical" ]; then
+    printf 'skip  %s identical to its first parent: %s\n' "$short" "$subject"
+    SKIPPED=$((SKIPPED + 1)); continue
+  fi
+  if [ "$why" = "team-only" ]; then
+    printf 'skip  %s team-only (ledger commit): %s\n' "$short" "$subject"
+    SKIPPED=$((SKIPPED + 1)); continue
+  fi
+  CHECKED=$((CHECKED + 1))
+  set +e
+  if [ -n "$ROLES" ]; then
+    out="$(TEAM_ROLES="$ROLES" sh "$GATE_CHECK" --sha "$c" --ledger "$LEDGER" ${BOARD:+--board "$BOARD"} 2>&1)"
+  else
+    out="$(sh "$GATE_CHECK" --sha "$c" --ledger "$LEDGER" ${BOARD:+--board "$BOARD"} 2>&1)"
+  fi
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    printf 'PASS  %s %s\n' "$short" "$subject"
+  else
+    printf 'FAIL  %s %s\n' "$short" "$subject"
+    printf '%s\n' "$out" | grep -E 'BLOCK|UNGATED|failing closed|roadblock|conflicting|unknown' | sed 's/^/        /'
+    FAILED=$((FAILED + 1)); FAIL_LIST="$FAIL_LIST $c"
+  fi
+done
+
+if [ "$FAILED" -ne 0 ]; then
+  printf '%s: FAIL. %s commit(s) lack the gates their change class requires in the ledger at %s:\n' "$PROG" "$FAILED" "$(printf '%.12s' "$TIP")" >&2
+  for f in $FAIL_LIST; do printf '  %s\n' "$f" >&2; done
+  printf '%s: record their gates (rows bound to each FULL sha), commit .team on top, push again.\n' "$PROG" >&2
+  exit 1
+fi
+printf '%s: PASS (%s checked, %s exempt; every code commit in the range is gated at the tip)\n' "$PROG" "$CHECKED" "$SKIPPED"
+exit 0

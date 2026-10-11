@@ -24,8 +24,10 @@ read. Keep the columns and order stable:
 - status : `active` | `parked` | `blocked` | `done`.
 - updated : ISO date (YYYY-MM-DD).
 
-NOTE FOR THE MANAGER: confirm these column names/order match the pre-commit-claim hook's parser once
-the enforcement lane lands, and reconcile if they differ.
+These columns, in this order, are what `enforcement/hooks/pre-commit-claim` parses: session,
+branch / worktree, files / globs, task, status, updated. Keep the order. Where every session has
+its own worktree (new-session, or Claude Code's agent worktrees) the claim rows are optional; keep
+them for any shared checkout.
 
 ---
 

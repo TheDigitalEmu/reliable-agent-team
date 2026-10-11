@@ -25,9 +25,8 @@ makes the failure ledger greppable by SHA and task id, so "why did gate X pass a
 is answerable with a grep, without changing the file's format or the kit's code. If a SHA or task
 id does not apply to an entry, use `SHA - TASK -:` so the lead shape stays consistent and greppable.
 
-NOTE FOR THE MANAGER: confirm `scripts/self-test` only checks this file EXISTS (and perhaps that it
-has a header), versus parsing the row columns, once the scripts lane lands. Reconcile the column set
-if the script parses it.
+`scripts/self-test` checks only that this file exists; no script parses its columns. The columns
+are for the humans and agents who read it on wake.
 
 ---
 

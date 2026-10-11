@@ -1,0 +1,114 @@
+#!/bin/sh
+# worktree-sweep : list, and on --apply remove, worktrees whose work is already on the main line.
+#
+# ROADBLOCK REMOVED (F20, and field review 0008, 3C)
+#   Finished worktrees pile up: Claude Code's Agent tool makes one per subagent under
+#   .claude/worktrees/agent-*, the kit makes them under .worktrees/, and nobody removes them
+#   because an agent asking to delete a directory is refused as "irreversible destruction".
+#   This is the script the human runs (or allows once): it prints what it WOULD remove, and
+#   removes only on --apply, only worktrees whose HEAD is already an ancestor of the main
+#   line, only when their tree is clean. It never touches the main worktree, never deletes
+#   an unmerged branch, and never removes a worktree with uncommitted changes.
+#
+# USAGE
+#   worktree-sweep                 dry run: one line per worktree, REMOVE / keep and why
+#   worktree-sweep --apply         remove every worktree marked REMOVE (and its merged branch)
+#   worktree-sweep --branch <b>    compare against <b> instead of the protected branch
+#                                  (TEAM_PROTECTED_BRANCH or main; origin/<b> if it exists)
+#
+# A worktree is REMOVE when ALL hold:
+#   - it is not the main worktree
+#   - its HEAD is an ancestor of the main line (its work is merged, or it never diverged)
+#   - git status --porcelain in it is empty (nothing uncommitted)
+# Otherwise it is kept, with the reason printed. Locked worktrees are kept.
+#
+# EXIT CODES
+#   0  done (dry run printed, or every REMOVE applied)
+#   1  --apply hit a worktree git refused to remove (the rest were still processed)
+#   2  not a repository / bad arguments
+
+set -eu
+
+PROG="$(basename "$0")"
+usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; }
+die() { code="$1"; shift; printf '%s: %s\n' "$PROG" "$*" >&2; exit "$code"; }
+
+APPLY=0
+BRANCH="${TEAM_PROTECTED_BRANCH:-main}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --apply)   APPLY=1; shift ;;
+    --branch)  BRANCH="${2:-}"; shift 2 ;;
+    *) die 2 "unknown argument: $1 (try --help)" ;;
+  esac
+done
+
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die 2 "not inside a git repository"
+
+# The main line: origin/<branch> when it exists (what is actually integrated), else <branch>.
+if git rev-parse -q --verify "refs/remotes/origin/$BRANCH" >/dev/null 2>&1; then
+  LINE="refs/remotes/origin/$BRANCH"
+elif git rev-parse -q --verify "refs/heads/$BRANCH" >/dev/null 2>&1; then
+  LINE="refs/heads/$BRANCH"
+else
+  die 2 "no branch named $BRANCH (local or origin); pass --branch"
+fi
+LINE_SHA="$(git rev-parse "$LINE")"
+MAIN_WT="$(git worktree list --porcelain | awk '/^worktree /{print substr($0, 10); exit}')"
+
+printf '%s: main line is %s (%s)\n' "$PROG" "$LINE" "$(printf '%.12s' "$LINE_SHA")"
+[ "$APPLY" -eq 1 ] || printf '%s: DRY RUN. Nothing is removed without --apply.\n' "$PROG"
+
+# The loop below runs in a pipeline subshell, so a refusal is recorded in a marker file.
+FAILMARK="$(mktemp 2>/dev/null)" || die 2 "cannot create a temp file"
+trap 'rm -f "$FAILMARK"' EXIT INT TERM
+: > "$FAILMARK"
+# Parse `git worktree list --porcelain` into (path, head, branch, locked) records.
+git worktree list --porcelain | awk '
+  /^worktree / { if (p != "") print p "\t" h "\t" b "\t" l; p = substr($0, 10); h = ""; b = ""; l = "no" }
+  /^HEAD /     { h = $2 }
+  /^branch /   { b = substr($0, 8) }
+  /^locked/    { l = "yes" }
+  END          { if (p != "") print p "\t" h "\t" b "\t" l }
+' | while IFS="$(printf '\t')" read -r wpath whead wbranch wlocked; do
+  if [ "$wpath" = "$MAIN_WT" ]; then
+    printf 'keep    %s (main worktree)\n' "$wpath"; continue
+  fi
+  if [ "$wlocked" = "yes" ]; then
+    printf 'keep    %s (locked)\n' "$wpath"; continue
+  fi
+  if [ ! -d "$wpath" ]; then
+    printf 'REMOVE  %s (directory already gone; prune)\n' "$wpath"
+    if [ "$APPLY" -eq 1 ]; then git worktree prune || echo refused >> "$FAILMARK"; fi
+    continue
+  fi
+  if ! git merge-base --is-ancestor "$whead" "$LINE_SHA" 2>/dev/null; then
+    printf 'keep    %s (HEAD %s is NOT on the main line: unmerged work)\n' "$wpath" "$(printf '%.12s' "$whead")"; continue
+  fi
+  if [ -n "$(git -C "$wpath" status --porcelain 2>/dev/null)" ]; then
+    printf 'keep    %s (uncommitted changes)\n' "$wpath"; continue
+  fi
+  printf 'REMOVE  %s (HEAD %s is on the main line, tree clean%s)\n' "$wpath" "$(printf '%.12s' "$whead")" "${wbranch:+, branch ${wbranch#refs/heads/}}"
+  if [ "$APPLY" -eq 1 ]; then
+    if git worktree remove "$wpath"; then
+      printf '        removed %s\n' "$wpath"
+      case "$wbranch" in
+        refs/heads/*)
+          b="${wbranch#refs/heads/}"
+          if [ "$b" != "$BRANCH" ] && git merge-base --is-ancestor "$wbranch" "$LINE_SHA" 2>/dev/null; then
+            git branch -d "$b" >/dev/null 2>&1 && printf '        deleted merged branch %s\n' "$b" || true
+          fi ;;
+      esac
+    else
+      printf '        git refused to remove %s (left in place)\n' "$wpath" >&2
+      echo refused >> "$FAILMARK"
+    fi
+  fi
+done
+
+if [ -s "$FAILMARK" ]; then
+  printf '%s: one or more worktrees could not be removed (see above)\n' "$PROG" >&2
+  exit 1
+fi
+exit 0

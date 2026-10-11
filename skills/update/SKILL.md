@@ -16,7 +16,7 @@ that is not this; say so and stop.
 
 ## Do this, in order (do not skip to the apply)
 
-Follow `${CLAUDE_PLUGIN_ROOT}/update-protocol.md` in full. In short:
+Follow `${CLAUDE_PLUGIN_ROOT}/skills/update/update-protocol.md` in full. In short:
 
 1. Read the local version: the first non-comment line of `${CLAUDE_PLUGIN_ROOT}/VERSION`.
 2. Check upstream: run `sh ${CLAUDE_PLUGIN_ROOT}/enforcement/ensure-rat`. It prints the installed

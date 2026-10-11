@@ -1,0 +1,80 @@
+name: Gate check
+
+# reliable-agent-team, server-side range gate (1.1.0). Copy this file to
+# .github/workflows/gate-check.yml in the adopting repository and set the two
+# values under env below.
+#
+# On every push to the protected branch it checks EVERY commit since the last
+# green tip against .team/ as committed at the pushed tip, with the kit's own
+# scripts/gate-check-range: each code commit needs the PASS rows its change
+# class requires, bound to its full SHA, by an author other than its work
+# author, with no sticky non-PASS row, from an author whose role resolves
+# (when .team/roles exists). A commit that changes only .team/ is exempt (it
+# is the ledger commit). Any ungated commit turns this run red and lists its
+# SHA. A deploy job then runs scripts/require-gate-run <sha> first, so nothing
+# ungated is ever deployed (see ci/github/README.md).
+#
+# The range starts at the newest earlier tip whose Gate check run succeeded
+# (an ancestor of this push), so a red push is checked again by the next one
+# and cannot be skipped by pushing on top of it; before any green run it
+# starts at GATE_BASELINE, the last commit before this check was enforced.
+# No usable base fails closed (the server never checks "the tip only").
+#
+# The kit is checked out at a PINNED ref (KIT_REF). Bump it deliberately when
+# you update the kit; never point it at a moving branch. The workflow reads
+# only: contents (history) and actions (the list of earlier green runs). It
+# changes no repository setting and no branch protection.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  gate-check:
+    name: Every code commit since the last green tip has its gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # SET THESE TWO.
+      # The last commit before range gating was enforced in THIS repository.
+      GATE_BASELINE: 0000000000000000000000000000000000000000
+      # The kit version this repository has adopted (a tag or full SHA, never a branch).
+      KIT_REF: v1.1.0
+      KIT_REPO: TheDigitalEmu/reliable-agent-team
+      TEAM_PROTECTED_BRANCH: main
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The whole history: every commit in the range is read.
+          fetch-depth: 0
+          path: repo
+
+      - name: Check out the kit at the pinned ref
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KIT_REPO }}
+          ref: ${{ env.KIT_REF }}
+          path: kit
+
+      - name: List earlier green Gate check tips
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/gate-check.yml/runs?branch=${TEAM_PROTECTED_BRANCH}&event=push&status=success&per_page=100" \
+            --jq '.workflow_runs[].head_sha' > "${RUNNER_TEMP}/green-tips.txt" || : > "${RUNNER_TEMP}/green-tips.txt"
+          echo "Earlier green tips listed: $(wc -l < "${RUNNER_TEMP}/green-tips.txt")"
+
+      - name: Check every commit in the range against the ledger at the tip
+        working-directory: repo
+        run: |
+          set -eu
+          sh "${GITHUB_WORKSPACE}/kit/scripts/gate-check-range" \
+            --tip "${GITHUB_SHA}" \
+            --baseline "${GATE_BASELINE}" \
+            --candidates "${RUNNER_TEMP}/green-tips.txt" \
+            --gate-check "${GITHUB_WORKSPACE}/kit/scripts/gate-check"

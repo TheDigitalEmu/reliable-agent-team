@@ -196,20 +196,25 @@ FAILED=0
 printf 'done-check: task=%s branch=%s sha=%s\n' "$TASK" "$BRANCH" "$SHA"
 
 # ------------------------------------------------------------------ (1) GIT
-# The branch must exist on origin, and HEAD must not be ahead of it.
+# The branch must exist on origin, and the task's SHA must be ON it (an ancestor of
+# origin/<branch>). The old test, "HEAD not ahead of origin/<branch>", assumed work is
+# pushed from the branch it was built on; in a worktree-and-merge flow the task's commit
+# is merged into the main line from elsewhere and HEAD here is irrelevant (field review
+# 0008, 3D). Ancestry is the fact that matters: the commit is integrated, or it is not.
 if ! git rev-parse --verify --quiet "origin/$BRANCH" >/dev/null 2>&1; then
   printf '  BLOCK GIT: origin/%s does not exist (branch not pushed)\n' "$BRANCH"
   printf '        roadblock: work stays local and never pushed (F2/F8)\n'
   FAILED=1
+elif ! git cat-file -e "$SHA^{commit}" 2>/dev/null; then
+  printf '  BLOCK GIT: sha %s is not a commit in this repository\n' "$SHA"
+  printf '        roadblock: the board names a commit git cannot find (F8)\n'
+  FAILED=1
+elif git merge-base --is-ancestor "$SHA" "origin/$BRANCH" 2>/dev/null; then
+  printf '  OK    GIT: %s is on origin/%s (merged or pushed)\n' "$(printf '%.12s' "$SHA")" "$BRANCH"
 else
-  AHEAD="$(git log --oneline "origin/$BRANCH..HEAD" 2>/dev/null | wc -l | tr -d ' ')"
-  if [ "$AHEAD" != "0" ]; then
-    printf '  BLOCK GIT: HEAD is AHEAD of origin/%s by %s commit(s) (unpushed)\n' "$BRANCH" "$AHEAD"
-    printf '        roadblock: unpushed reads as done (F2/F8). Push before claiming done.\n'
-    FAILED=1
-  else
-    printf '  OK    GIT: pushed, HEAD not ahead of origin/%s\n' "$BRANCH"
-  fi
+  printf '  BLOCK GIT: sha %s is NOT on origin/%s (unpushed or unmerged)\n' "$(printf '%.12s' "$SHA")" "$BRANCH"
+  printf '        roadblock: unpushed reads as done (F2/F8). Push or merge before claiming done.\n'
+  FAILED=1
 fi
 
 # ------------------------------------------------------------------ (2) GATES

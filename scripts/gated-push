@@ -1,0 +1,75 @@
+#!/bin/sh
+# gated-push : run the range gate check and push ONLY if it passes, in ONE process.
+#
+# ROADBLOCK REMOVED (field review 0008, 3G: shell hygiene left to the agent)
+#   Two pushes went out red in one week: once the gate's exit code was masked by
+#   "| tail -1", once the push was chained after "echo gate=$?" so the shell gated
+#   the push on echo. Both were procedure. This is the block: the check and the
+#   push happen in the same process, the push runs only on exit 0, and the exit
+#   code of this script is the truth. There is nothing to chain.
+#
+# USAGE
+#   gated-push [<remote>] [<branch>]        (defaults: origin, the protected branch
+#                                            TEAM_PROTECTED_BRANCH or main)
+#   gated-push --dry-run [<remote>] [<branch>]   check, print the verdict, do not push
+#
+# WHAT IT DOES
+#   1. git fetch <remote> <branch>  (so the base is the remote's REAL tip, not a stale ref)
+#   2. gate-check-range --tip HEAD --base <remote>/<branch>  (ledger read from HEAD)
+#   3. on exit 0: git push <remote> HEAD:refs/heads/<branch>
+#   The pre-push hook runs again inside the push; it reaches the same verdict from
+#   the same inputs, so this is belt and braces, not a bypass.
+#
+# EXIT CODES
+#   0  checked and pushed (or --dry-run and the check passed).
+#   1  the check failed; nothing was pushed.
+#   2  environment error (not a repo, fetch failed, checker missing); nothing pushed.
+#   other: the push itself failed after a green check (git's own exit code).
+
+set -eu
+
+PROG="$(basename "$0")"
+usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; }
+die() { code="$1"; shift; printf '%s: %s\n' "$PROG" "$*" >&2; exit "$code"; }
+
+DRY=0
+[ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] && { usage; exit 0; }
+[ "${1:-}" = "--dry-run" ] && { DRY=1; shift; }
+REMOTE="${1:-origin}"
+BRANCH="${2:-${TEAM_PROTECTED_BRANCH:-main}}"
+
+SELF_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+RANGE="${TEAM_GATE_CHECK_RANGE:-$SELF_DIR/gate-check-range}"
+[ -f "$RANGE" ] || die 2 "gate-check-range not found at $RANGE"
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die 2 "not inside a git repository"
+
+TIP="$(git rev-parse HEAD)"
+if git remote get-url "$REMOTE" >/dev/null 2>&1; then
+  git fetch --quiet "$REMOTE" "$BRANCH" 2>/dev/null || true
+else
+  die 2 "remote '$REMOTE' is not configured"
+fi
+
+if git rev-parse -q --verify "refs/remotes/$REMOTE/$BRANCH" >/dev/null 2>&1; then
+  BASE="$(git rev-parse "refs/remotes/$REMOTE/$BRANCH")"
+  set -- --tip "$TIP" --base "$BASE" --allow-tip-only
+else
+  set -- --tip "$TIP" --allow-tip-only
+fi
+
+printf '%s: checking HEAD %s against %s/%s before pushing\n' "$PROG" "$(printf '%.12s' "$TIP")" "$REMOTE" "$BRANCH"
+if sh "$RANGE" "$@"; then
+  :
+else
+  rc=$?
+  printf '%s: NOT PUSHED. The range check exited %s; fix the listed commits and run again.\n' "$PROG" "$rc" >&2
+  exit 1
+fi
+
+if [ "$DRY" -eq 1 ]; then
+  printf '%s: dry run, check passed, nothing pushed.\n' "$PROG"
+  exit 0
+fi
+
+printf '%s: check passed, pushing %s -> %s/%s\n' "$PROG" "$(printf '%.12s' "$TIP")" "$REMOTE" "$BRANCH"
+git push "$REMOTE" "HEAD:refs/heads/$BRANCH"

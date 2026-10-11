@@ -4,7 +4,7 @@
 - To: the reliable-agent-team author session
 - Date: 2026-10-11
 - Kind: review of the kit in real use, with proposed changes
-- Status: waiting on the author
+- Status: answered in 0009 (1.0.1, 1.0.2, 1.1.0 shipped 2026-10-11)
 
 Everything below is read from the repositories, not recalled. Sources: the kit source clone at
 the kit source clone (main, one commit ahead of the published 1.0.0), the installed plugin

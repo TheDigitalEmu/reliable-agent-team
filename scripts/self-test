@@ -137,6 +137,34 @@ else
   printf '        Fix: copy the kit templates/ into %s/templates/.\n' "$TEAMDIR"
 fi
 
+# ---------------------------------------------------------- (E) ROLES RESOLVE
+# The role guards (manager cannot write code, manager cannot author a PASS, unknown
+# PASS author fails closed) read .team/roles and the ROLE= line of .team/whoami. For
+# four weeks on one adoption neither existed and every guard failed open (field review
+# 0008, 3B). A guard with no input is not installed; say so here.
+RESOLVE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/../enforcement/lib/resolve-role"
+if [ -f "$TEAMDIR/roles" ]; then
+  if grep -v '^[[:space:]]*#' "$TEAMDIR/roles" 2>/dev/null | grep -qv 'EXAMPLE\|^[[:space:]]*|[[:space:]]*session\|^[[:space:]]*|---\|^[[:space:]]*$'; then
+    note_ok "roles: $TEAMDIR/roles present with at least one real row"
+  else
+    note_bad "roles: $TEAMDIR/roles has only EXAMPLE rows; add each real session (new-session --role does this)."
+  fi
+else
+  note_bad "roles: $TEAMDIR/roles MISSING (copy templates/roles; new-session --role appends rows)."
+  printf '        roadblock: the role guards fail OPEN with no ledger; a manager PASS or code write goes unchallenged.\n'
+fi
+if [ -f "$TEAMDIR/whoami" ] && [ -f "$RESOLVE" ]; then
+  MY_ROLE="$(TEAM_WHOAMI="$TEAMDIR/whoami" TEAM_ROLES="$TEAMDIR/roles" sh "$RESOLVE" 2>/dev/null || true)"
+  if [ -n "$MY_ROLE" ]; then
+    note_ok "role: this session resolves to '$MY_ROLE'"
+  else
+    note_bad "role: this session's role does not resolve (no ROLE= in $TEAMDIR/whoami and no roles row)."
+    printf '        Fix: enforcement/new-session --role <role> ..., or add ROLE=<role> to %s/whoami.\n' "$TEAMDIR"
+  fi
+elif [ ! -f "$TEAMDIR/whoami" ]; then
+  note_bad "role: $TEAMDIR/whoami MISSING (new-session writes it)."
+fi
+
 # ---------------------------------------------------------- verdict
 printf '\n'
 if [ "$FAILED" -ne 0 ]; then

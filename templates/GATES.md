@@ -31,10 +31,17 @@ Row format, the exact columns the scripts parse. Keep the columns and order stab
 A commit is cleared to merge only when every gate its change_class requires has a `PASS` row bound to
 THAT commit_sha, each by an author who is not the work author.
 
-NOTE FOR THE MANAGER: confirm these field names/order match `scripts/gate-check`'s parser once the
-scripts lane lands. The register describes the row as "commit_sha, change_class, gate, verdict,
-author"; `date` and `evidence` are added here as the auditable proof columns and should be reconciled
-against the script (they may be optional or named differently).
+The ledger of record is this file AS COMMITTED AT THE PUSHED TIP. The push hook and the server
+check read it with `git show <tip>:.team/GATES.md`, never from the working tree. Record the rows,
+then commit `.team` as its own commit on top of the code commits, then push. A `.team`-only commit
+needs no row of its own.
+
+Reserved trailing cells: anything after `author` is ignored by the parser except ONE named cell,
+`model=<name>` (the model that ran the gate). With `TEAM_DISTINCT_MODEL=1` a PASS whose `model=`
+equals the board's `model=` for the work is refused. `date` and `evidence` are human proof columns.
+
+When this file grows large, rotate it: move it to `.team/gates/YYYY-MM.md` and keep adding files
+there; both the hook and the server read every `*.md` in that directory when `GATES.md` is absent.
 
 ---
 

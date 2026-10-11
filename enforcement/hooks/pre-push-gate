@@ -15,24 +15,36 @@
 #   and feeds one line per ref being pushed on stdin:
 #       <local ref> <local sha> <remote ref> <remote sha>
 #   For every ref that targets the protected branch (default: main), this
-#   hook shells out to gate-check IN SHA-ONLY MODE for the EXACT sha being
-#   pushed, and BLOCKS the push unless gate-check exits 0. Pushes to any other
-#   branch pass straight through. If gate-check is missing it fails CLOSED.
+#   hook shells out to gate-check-range for the WHOLE RANGE remote_sha..local_sha
+#   (first-parent) and BLOCKS the push unless it exits 0. Pushes to any other
+#   branch pass straight through. If the checker is missing it fails CLOSED.
 #
-# CONTRACT WITH gate-check (this hook does not implement gate logic)
-#   scripts/gate-check --sha <commit-sha>
-#     The hook has only a SHA (git gives it nothing else), so it uses gate-check
-#     SHA-only mode: gate-check DERIVES the change class from the ledger rows
-#     recorded for that SHA, and DERIVES the work author from the task board by
-#     SHA, then enforces the matching gate set and self-sign-off.
-#     A SHA with no recorded class is UNGATED and fails CLOSED.
-#     exit 0  => all required gates for that commit's change class have a
-#               logged PASS for this exact SHA, from an author who is not the
-#               work author (self-sign-off rejected). Push allowed.
-#     exit !=0 => a gate is missing/failed/self-signed. gate-check prints why.
-#   This hook is deliberately dumb: SHA binding + fail-closed only. All policy
-#   (which gates, change classes, self-sign-off) lives in gate-check so the
-#   BLOCK and the CHECK stay separable and independently testable.
+# CONTRACT WITH gate-check-range (this hook does not implement gate logic)
+#   scripts/gate-check-range --tip <local sha> --base <remote sha> --allow-tip-only
+#     Every commit in the range is checked in gate-check SHA-only mode against
+#     the ledger, board and roles AS COMMITTED AT THE TIP (git show), never the
+#     working tree. A commit that changes only .team/ paths is exempt (it is the
+#     ledger commit), and so is a commit identical to its first parent.
+#     --allow-tip-only: when the remote tip is unknown (first push of the branch,
+#     or a force push over a tip this clone never saw) and no TEAM_GATE_BASELINE
+#     is set, only the tip is checked, with a loud warning. Set the baseline.
+#     exit 0  => every code commit in the range has its required PASS rows,
+#               bound to its exact SHA, independently authored. Push allowed.
+#     exit !=0 => a commit is ungated/failed/self-signed, or the tip carries no
+#               committed ledger. The checker prints which and why.
+#   This hook is deliberately dumb: range + fail-closed only. All policy (which
+#   gates, change classes, self-sign-off, roles) lives in gate-check, and the
+#   range rules in gate-check-range, so BLOCK and CHECK stay separable.
+#   The same gate-check-range runs on the server (ci/github/gate-check.yml), so
+#   a push that passes here passes there, and a path this clone never sees is
+#   still checked.
+#
+# UNTIL 1.0.x this hook gated the TIP ONLY from the WORKING-TREE ledger. That
+#   made sessions hold the ledger uncommitted and forced a hollow self-signed
+#   row for every ledger commit (field review 0008, 3A). The convention now:
+#   code commits, then ONE .team-only ledger commit, then push.
+#   Transition switch: TEAM_GATE_LEDGER_SOURCE=worktree reads the working tree
+#   again (the server will not; use it only to migrate, then unset it).
 #
 # INSTALL
 #   Run enforcement/install-hooks from the repo root (idempotent). Do not
@@ -40,8 +52,12 @@
 #
 # CONFIGURE (env vars)
 #   TEAM_PROTECTED_BRANCH   protected branch name   (default main)
-#   TEAM_GATE_CHECK         path to gate-check       (default: resolved
-#                           relative to this hook: ../scripts/gate-check)
+#   TEAM_GATE_CHECK_RANGE   path to gate-check-range (default: resolved
+#                           relative to this hook: ../../scripts/gate-check-range)
+#   TEAM_GATE_CHECK         path to gate-check, passed through to the range checker
+#   TEAM_GATE_BASELINE      last pre-adoption commit; bounds the range when the
+#                           remote tip is unknown (retrofit onto an existing repo)
+#   TEAM_GATE_LEDGER_SOURCE tip (default) | worktree (transition only)
 #
 # TESTS
 #   The authoritative test is the REAL end-to-end integration suite in
@@ -71,32 +87,30 @@ PROTECTED="${TEAM_PROTECTED_BRANCH:-main}"
 # hook is invoked via a copied wrapper (exec of the real file), a symlink into
 # .git/hooks, or core.hooksPath.
 hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-if [ -n "${TEAM_GATE_CHECK:-}" ]; then
-	GATE_CHECK="$TEAM_GATE_CHECK"
-elif [ -e "$hook_dir/../../scripts/gate-check" ]; then
-	GATE_CHECK="$hook_dir/../../scripts/gate-check"   # enforcement/hooks -> scripts
-elif [ -e "$hook_dir/../scripts/gate-check" ]; then
-	GATE_CHECK="$hook_dir/../scripts/gate-check"       # tolerant fallback
+if [ -n "${TEAM_GATE_CHECK_RANGE:-}" ]; then
+	GATE_RANGE="$TEAM_GATE_CHECK_RANGE"
+elif [ -e "$hook_dir/../../scripts/gate-check-range" ]; then
+	GATE_RANGE="$hook_dir/../../scripts/gate-check-range"   # enforcement/hooks -> scripts
+elif [ -e "$hook_dir/../scripts/gate-check-range" ]; then
+	GATE_RANGE="$hook_dir/../scripts/gate-check-range"       # tolerant fallback
 else
-	GATE_CHECK="$hook_dir/../../scripts/gate-check"    # canonical, for the error message
+	GATE_RANGE="$hook_dir/../../scripts/gate-check-range"    # canonical, for the error message
 fi
 
 ZERO="0000000000000000000000000000000000000000"
 
-# --- fail closed if gate-check is unavailable -------------------------------
-# gate_run runs gate-check with the exec bit when present, else via `sh` so the
-# gate still runs on filesystems without executable bits (Windows checkouts).
-if [ -x "$GATE_CHECK" ]; then
-	gate_run() { "$GATE_CHECK" "$@"; }
-elif [ -f "$GATE_CHECK" ]; then
-	gate_run() { sh "$GATE_CHECK" "$@"; }
+# --- fail closed if the range checker is unavailable ------------------------
+# Always run via `sh` so the gate still runs on filesystems without executable
+# bits (Windows checkouts).
+if [ -f "$GATE_RANGE" ]; then
+	gate_run() { sh "$GATE_RANGE" "$@"; }
 else
 	printf '%s\n' \
 		"BLOCKED by pre-push-gate (roadblock F2: merged before gates pass)." \
-		"Required gate-check script not found: $GATE_CHECK" \
-		"A missing gate-check fails CLOSED: a push to $PROTECTED cannot be" \
+		"Required gate-check-range script not found: $GATE_RANGE" \
+		"A missing checker fails CLOSED: a push to $PROTECTED cannot be" \
 		"proven gated, so it is refused." \
-		"Fix: install scripts/gate-check, or set TEAM_GATE_CHECK to its path." >&2
+		"Fix: install scripts/gate-check-range, or set TEAM_GATE_CHECK_RANGE to its path." >&2
 	exit 2
 fi
 
@@ -115,21 +129,25 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 		*) continue ;;   # non-protected branch: pass through
 	esac
 
-	# gate-check the EXACT sha being pushed (SHA-bound gate, SHA-only mode:
-	# gate-check derives class from the ledger and author from the board).
-	if gate_run --sha "$local_sha"; then
-		: # gate passed for this sha
+	# Gate the WHOLE range remote..local against the ledger committed at the
+	# tip. An unknown remote tip (all zeros) is passed through as no base; the
+	# checker then uses TEAM_GATE_BASELINE, or the tip only with a warning.
+	if [ "${remote_sha:-$ZERO}" = "$ZERO" ]; then
+		set -- --tip "$local_sha" --allow-tip-only
+	else
+		set -- --tip "$local_sha" --base "$remote_sha" --allow-tip-only
+	fi
+	if gate_run "$@"; then
+		: # every commit in the range is gated at the tip
 	else
 		gc_code=$?
 		printf '%s\n' \
 			"BLOCKED by pre-push-gate: push to '$PROTECTED' refused." \
 			"Roadblock F2 (merged before gates pass) / gate-bound-to-SHA." \
-			"Commit $local_sha does not have the required gate PASS." \
-			"gate-check exited $gc_code (its message above names what is missing)." \
-			"Note: any NEW commit on top of a previously gated tip invalidates" \
-			"the gate and must be re-gated for its own SHA." \
-			"Fix: obtain the required reviewer/security/qa PASS for THIS commit," \
-			"then push again." >&2
+			"gate-check-range exited $gc_code (its lines above name each commit and why)." \
+			"The ledger of record is .team/ AS COMMITTED AT $local_sha, not your working tree." \
+			"Fix: record the required reviewer/security/qa PASS rows for each listed commit" \
+			"(bound to its FULL sha), commit .team on top as its own commit, push again." >&2
 		BLOCKED=1
 	fi
 done

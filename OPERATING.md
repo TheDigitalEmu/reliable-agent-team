@@ -32,15 +32,20 @@ artifact. It never hands verification to you. You are not the QA.
 
 ## The daily loop
 
-1. Start a session: `enforcement/new-session <name> <branch>`. This creates one
-   git worktree for the session (inside the repo, never your root) so two sessions
-   cannot damage each other's files. It writes a claim row in `.team/SESSIONS.md`.
+1. Start a session: `enforcement/new-session --role <role> <name> <branch>`. The role
+   is required: it is written to the session's `.team/whoami` and to the shared
+   `.team/roles` ledger, which is what lets a manager be refused as a gate author or
+   a code writer. new-session creates one git worktree for the session (inside the
+   repo, never your root) so two sessions cannot damage each other's files, and
+   writes a claim row in `.team/SESSIONS.md`.
 2. Work happens in that worktree. The pre-commit hook blocks a commit that touches
    files another live session has claimed. Commit and push freely; unpushed work
    does not count as done.
 3. Gate before merge. A change cannot reach the main line until the gates for its
    change class have a logged PASS bound to that exact commit, from someone other
-   than the author. The pre-push hook enforces this.
+   than the author. The pre-push hook checks EVERY commit in the push against the
+   ledger as committed at the tip (see "Pushing to the main line" below), and the
+   same check runs on the server if you install `ci/github/gate-check.yml`.
 4. Call it done with `scripts/done-check`, not from memory. It greps git (pushed,
    on the branch), the gate ledger (required PASSes present), any live artifact,
    and the project's own extra checks in `.team/done-extra`. "Done" is the script's
@@ -83,10 +88,47 @@ independent check is a human or a different model.
 - Anything compliance or safety-critical needs a human sign-off. An agent thread
   is not independent review.
 
+## Pushing to the main line (the convention the hook and the server enforce)
+
+1. Code commits, each with its gate rows in `.team/GATES.md` bound to its FULL sha.
+2. ONE `.team`-only commit on top that carries those rows (and the board and roles
+   rows that go with them). It needs no gate row of its own: a commit that changes
+   only `.team/` is exempt. The manager never writes a hollow PASS for it.
+3. Push with `scripts/gated-push`. It fetches, runs `scripts/gate-check-range` on
+   remote..HEAD, and pushes only on exit 0, in one process, so nothing can be chained
+   wrong. The pre-push hook runs the same check again inside the push.
+
+The ledger of record is `.team/` AS COMMITTED AT THE PUSHED TIP. A ledger held in the
+working tree is invisible to the server and, since 1.1.0, to the local hook too. If a
+push is refused with "the tip carries no committed ledger", you skipped step 2.
+
+Retrofit onto an existing repository: set `TEAM_GATE_BASELINE` (and `GATE_BASELINE` in
+the workflow) to the last commit before adoption; history before it is never gated.
+
+## Working inside Claude Code (what the runtime does for you, and against you)
+
+- Subagents get their own worktrees under `.claude/worktrees/agent-*`. Those count as
+  session isolation. The claim ledger still works but is optional when every session
+  has its own tree; keep it for shared checkouts.
+- Finished worktrees pile up because an agent asking to delete a directory is refused
+  as destruction. `scripts/worktree-sweep` prints what is merged and clean; the human
+  runs `--apply` (or allows it once).
+- The auto-mode classifier reads a manager writing PASS rows as a CI bypass. The
+  answer is structural, not a workaround: the gate agents write their own rows, the
+  manager only commits the ledger. It also refuses `git stash` on a shared tree; do
+  not stash, commit to the session branch instead.
+- The manager wall (`deny-manager-code-write`) is wired by the plugin as a PreToolUse
+  hook on Write and Edit. It acts only when the session's role resolves to manager,
+  so a session started without `--role` is unguarded, and `self-test` says so.
+
 ## When something is off
 
 - A commit is blocked: another session claimed the file (see `.team/SESSIONS.md`),
   or the push is not gated for this exact commit. The hook message names which.
+- A push is refused with a list of SHAs: each named commit lacks the rows its class
+  needs in the ledger AT THE TIP. Add them, commit `.team` on top, push again.
+- A PASS is refused as "no row in the roles ledger": the gate author is not in
+  `.team/roles`. Add the row (new-session does this) rather than loosening the check.
 - `done-check` refuses: it names the missing piece (unpushed, a missing gate, a
   down artifact, a failing extra check). Fix that piece; do not override.
 - The board drifted: run `reconcile` to re-verify and re-drive.

@@ -92,6 +92,17 @@
 #   The self-sign-off check is skipped (warning only) ONLY when NO author is given and NO
 #   board row is bound to the SHA at all; the presence/verdict checks still run.
 #
+# ROLE AND LENS RULES (1.1.0; env knobs, all read-only)
+#   TEAM_ROLES            path of the session->role ledger (default .team/roles).
+#   TEAM_ROLES_STRICT     1: a PASS whose author has no role row BLOCKS. 0: never.
+#                         Unset: strict exactly when the roles ledger file exists.
+#   TEAM_DISTINCT_LENSES  1: each required gate's PASS must come from a different author.
+#   TEAM_DISTINCT_MODEL   1: a row's trailing `model=` cell must differ from the board's
+#                         `model=` cell for the work (enforced only when both are present).
+#   A PASS by a `manager` role is always refused, independent of these knobs.
+#   Range mode (every commit in a push, ledger read from the tip commit) lives in
+#   scripts/gate-check-range, which calls this script once per commit.
+#
 # EXIT CODES
 #   0  all required gates present, PASS, and independently authored.
 #   1  a required gate is missing, not PASS, or self-signed.
@@ -117,7 +128,7 @@ set -eu
 PROG="$(basename "$0")"
 
 usage() {
-  sed -n '2,113p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,124p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() {   # die <exit-code> <message...>
@@ -220,7 +231,13 @@ ledger_rows_compute() {
       if (s ~ /[^0-9a-fA-F]/) next
       if (length(s) < 7 || length(s) < nt) next
       if (substr(tolower(s), 1, nt) != lt) next
-      printf "%s\t%s\t%s\t%s\t%s\n", s, trim(f[2]), trim(f[3]), trim(f[4]), trim(f[5])
+      # Reserved trailing cells (seam 2) are never required, but ONE named cell is
+      # read if present: model=<name>, the model that ran the gate (1.1.0, opt-in
+      # TEAM_DISTINCT_MODEL). The 5-field cut is unchanged; this only looks for a
+      # cell literally starting with model= among fields 6 and up.
+      m = ""
+      for (i = 6; i <= n; i++) { c = trim(f[i]); if (substr(c, 1, 6) == "model=") { m = substr(c, 7); break } }
+      printf "%s\t%s\t%s\t%s\t%s\t%s\n", s, trim(f[2]), trim(f[3]), trim(f[4]), trim(f[5]), m
     }'
 }
 LEDGER_ROWS="$(ledger_rows_compute)"
@@ -260,18 +277,28 @@ esac
 # enforcement and let a self-signed PASS through. When the board binds a row to the SHA but
 # the author cannot be resolved, BLOCK with a clear message. Skipping self-sign is only ever
 # allowed when NO board line is bound to the SHA at all (nothing to derive from).
+# Rows are split by the shared normaliser (markdown table rows and plain pipe lines
+# read the same; a bare split used to leave "author=developer \" and defeat the
+# self-sign-off compare below). See enforcement/lib/board-cells.sh.
+_gc_self_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck source=../enforcement/lib/board-cells.sh
+. "${BOARD_CELLS:-$_gc_self_dir/../enforcement/lib/board-cells.sh}"
+
+[ -n "$BOARD" ] || { [ -f ".team/TASKS.md" ] && BOARD=".team/TASKS.md"; } || true
+# First non-comment board line mentioning this SHA (empty if none matches). Read once;
+# the author (SHA-only mode) and the optional model= cell both come from it.
+board_line=""
+if [ -n "$BOARD" ] && [ -f "$BOARD" ]; then
+  board_line=$(grep -v '^[[:space:]]*#' "$BOARD" 2>/dev/null \
+    | grep -F "$SHA" 2>/dev/null | head -n1 || true)
+fi
+WORK_MODEL=""
+if [ -n "${board_line:-}" ]; then
+  WORK_MODEL=$(printf '%s' "$board_line" | board_cells | grep -E '^model=' | head -n1 | sed 's/^model=//')
+fi
+
 if [ "$AUTHOR_GIVEN" -eq 0 ]; then
-  [ -n "$BOARD" ] || { [ -f ".team/TASKS.md" ] && BOARD=".team/TASKS.md"; } || true
   if [ -n "$BOARD" ] && [ -f "$BOARD" ]; then
-    # Rows are split by the shared normaliser (markdown table rows and plain pipe lines
-    # read the same; a bare split used to leave "author=developer \" and defeat the
-    # self-sign-off compare below). See enforcement/lib/board-cells.sh.
-    _gc_self_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-    # shellcheck source=../enforcement/lib/board-cells.sh
-    . "${BOARD_CELLS:-$_gc_self_dir/../enforcement/lib/board-cells.sh}"
-    # First non-comment board line mentioning this SHA (empty if none matches).
-    board_line=$(grep -v '^[[:space:]]*#' "$BOARD" 2>/dev/null \
-      | grep -F "$SHA" 2>/dev/null | head -n1 || true)
     if [ -n "${board_line:-}" ]; then
       # A board row is bound to this SHA: its author MUST resolve, or we fail closed.
       board_author=$(printf '%s' "$board_line" \
@@ -299,13 +326,28 @@ author_role() {  # author_role <author-id> -> prints role or empty
   sh "$RESOLVE_ROLE" "$1" 2>/dev/null || printf ''
 }
 
+# ROLES LEDGER (1.1.0). When the project keeps a roles ledger (.team/roles, or
+# TEAM_ROLES), a PASS whose author is NOT in it fails CLOSED: an unknown author is
+# an unverifiable lens, and a guard that fails open on a missing row is no guard
+# (field review 0008, item 3). When the project keeps NO roles ledger at all, the
+# role checks fail open as before and self-test reports the gap. Override with
+# TEAM_ROLES_STRICT=0 (never) or =1 (always, even with no ledger).
+ROLES_LEDGER="${TEAM_ROLES:-.team/roles}"
+if [ -n "${TEAM_ROLES_STRICT:-}" ]; then
+  ROLES_STRICT="$TEAM_ROLES_STRICT"
+elif [ -f "$ROLES_LEDGER" ]; then
+  ROLES_STRICT=1
+else
+  ROLES_STRICT=0
+fi
+
 # For a given gate name, classify every matching row for this SHA.
 # Emits one line per row: "PASS:<author>" | "SELFSIGN:<author>" |
-# "MANAGERSIGN:<author>" | "NONPASS:<verdict>".
+# "MANAGERSIGN:<author>" | "NOROLE:<author>" | "SAMEMODEL:<author>" | "NONPASS:<verdict>".
 # The caller resolves precedence with FAIL-wins (H2).
 gate_status() {  # gate_status <gate>
   want_gate="$1"
-  ledger_rows_for_sha | while IFS="$(printf '\t')" read -r r_sha r_class r_gate r_verdict r_author; do
+  ledger_rows_for_sha | while IFS="$(printf '\t')" read -r r_sha r_class r_gate r_verdict r_author r_model; do
     [ "$r_gate" = "$want_gate" ] || continue
     v=$(printf '%s' "$r_verdict" | tr '[:lower:]' '[:upper:]')
     if [ "$v" = "PASS" ]; then
@@ -319,9 +361,25 @@ gate_status() {  # gate_status <gate>
         fi
       fi
       # A manager must never author a gate PASS, regardless of who did the work.
-      if [ "$(author_role "$r_author")" = "manager" ]; then
+      role="$(author_role "$r_author")"
+      if [ "$role" = "manager" ]; then
         printf 'MANAGERSIGN:%s\n' "$r_author"
         continue
+      fi
+      if [ -z "$role" ] && [ "$ROLES_STRICT" = "1" ]; then
+        printf 'NOROLE:%s\n' "$r_author"
+        continue
+      fi
+      # Opt-in (TEAM_DISTINCT_MODEL=1): the model that ran the gate must differ from
+      # the model that did the work (board model= cell vs row model= cell). Only
+      # enforced when BOTH are recorded; a missing cell is reported, not blocked.
+      if [ "${TEAM_DISTINCT_MODEL:-0}" = "1" ] && [ -n "$WORK_MODEL" ] && [ -n "$r_model" ]; then
+        wm=$(printf '%s' "$WORK_MODEL" | tr '[:upper:]' '[:lower:]' | sed 's/^[ \t]*//; s/[ \t]*$//')
+        rm_=$(printf '%s' "$r_model"   | tr '[:upper:]' '[:lower:]' | sed 's/^[ \t]*//; s/[ \t]*$//')
+        if [ "$wm" = "$rm_" ]; then
+          printf 'SAMEMODEL:%s\n' "$r_author"
+          continue
+        fi
       fi
       printf 'PASS:%s\n' "$r_author"
     else
@@ -349,6 +407,8 @@ for g in $REQUIRED; do
   nonpass_line=$(printf '%s\n' "$results" | grep -m1 '^NONPASS:' || true)
   self_line=$(printf '%s\n' "$results" | grep -m1 '^SELFSIGN:' || true)
   mgr_line=$(printf '%s\n' "$results" | grep -m1 '^MANAGERSIGN:' || true)
+  norole_line=$(printf '%s\n' "$results" | grep -m1 '^NOROLE:' || true)
+  samemodel_line=$(printf '%s\n' "$results" | grep -m1 '^SAMEMODEL:' || true)
   pass_line=$(printf '%s\n' "$results" | grep -m1 '^PASS:' || true)
 
   if [ -n "$nonpass_line" ]; then
@@ -371,12 +431,37 @@ for g in $REQUIRED; do
   elif [ -n "$pass_line" ]; then
     who=${pass_line#PASS:}
     printf '  OK    %-9s PASS by %s\n' "$g" "$who"
+    PASS_AUTHORS="${PASS_AUTHORS:-}
+$g $(printf '%s' "$who" | tr '[:upper:]' '[:lower:]' | sed 's/^[ \t]*//; s/[ \t]*$//')"
+  elif [ -n "$norole_line" ]; then
+    who=${norole_line#NOROLE:}
+    printf '  BLOCK %-9s PASS author "%s" has no row in the roles ledger (%s)\n' "$g" "$who" "$ROLES_LEDGER"
+    printf '        roadblock: an unverifiable lens. Add "| %s | <role> |" to the roles ledger, or\n' "$who"
+    printf '        set TEAM_ROLES_STRICT=0 to fail open (not recommended).\n'
+    FAILED=1
+  elif [ -n "$samemodel_line" ]; then
+    who=${samemodel_line#SAMEMODEL:}
+    printf '  BLOCK %-9s PASS by "%s" ran on the same model as the work (model=%s)\n' "$g" "$who" "$WORK_MODEL"
+    printf '        roadblock: TEAM_DISTINCT_MODEL=1 requires a different model to gate the work.\n'
+    FAILED=1
   else
     printf '  BLOCK %-9s MISSING: no PASS row bound to SHA %s\n' "$g" "$SHA"
     printf '        roadblock: work merged before its gates pass / gate not bound to SHA (F2)\n'
     FAILED=1
   fi
 done
+
+# Opt-in (TEAM_DISTINCT_LENSES=1): when a class needs more than one gate, each gate's PASS
+# must come from a different author, so three lenses are three agents, not one agent
+# wearing three hats (field review 0008, item 3I).
+if [ "${TEAM_DISTINCT_LENSES:-0}" = "1" ] && [ "$FAILED" -eq 0 ]; then
+  dup=$(printf '%s\n' "${PASS_AUTHORS:-}" | awk 'NF == 2 { if (seen[$2]++) print $2 }' | head -n1)
+  if [ -n "$dup" ]; then
+    printf '  BLOCK lenses    author "%s" signed more than one gate for this SHA\n' "$dup"
+    printf '        roadblock: TEAM_DISTINCT_LENSES=1 requires a distinct author per gate.\n'
+    FAILED=1
+  fi
+fi
 
 if [ "$FAILED" -ne 0 ]; then
   printf 'gate-check: FAIL (see BLOCK lines above)\n' >&2

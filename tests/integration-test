@@ -96,6 +96,14 @@ try_push() {
 	git push origin HEAD:refs/heads/main >/dev/null 2>&1
 }
 
+# 1.1.0 push convention: code commits, then ONE .team-only ledger commit, then push.
+# The hook reads the ledger from the TIP COMMIT, so a test that expects a push to pass
+# must commit .team first. This is that commit.
+commit_ledger() {
+	git_quiet add -A .team
+	git_quiet commit -m "ledger" --allow-empty
+}
+
 printf 'integration-test: real hook + gate-check wiring\n\n'
 
 # ---------------------------------------------------------------- C1 + C1b (push)
@@ -112,6 +120,9 @@ if try_push; then bad "C1b ungated push should be blocked but was allowed"; else
 seed_gate "$HEAD_SHA" static reviewer PASS reviewer
 # board records the work author so self-sign-off is derivable at push time.
 printf 'T1 | class=static | author=me | sha=%s\n' "$HEAD_SHA" >> "$REPO/.team/TASKS.md"
+# C1a (1.1.0): the ledger of record is the COMMITTED one. Held uncommitted, the push is refused.
+if try_push; then bad "C1a push with the ledger only in the working tree was allowed (ledger of record is the tip)"; else ok "C1a ledger held uncommitted is refused (the tip carries no rows)"; fi
+commit_ledger
 if try_push; then ok "C1 correctly-gated full sha PASSES the push"; else bad "C1 correctly-gated push was blocked (regression of the C1 false-block)"; fi
 
 # ---------------------------------------------------------------- H1 (prefix)
@@ -159,6 +170,7 @@ git_quiet commit -m "work by me"
 HEAD_SHA=$(git rev-parse HEAD)
 seed_gate "$HEAD_SHA" static reviewer PASS me            # PASS by the work author
 printf 'T1 | class=static | author=me | sha=%s\n' "$HEAD_SHA" >> "$REPO/.team/TASKS.md"
+commit_ledger
 if try_push; then
 	bad "M2 self-signed PASS was allowed through at push time"
 else
@@ -223,20 +235,20 @@ fi
 # ---------------------------------------------------------------- M5 (ledger injection)
 setup_repo m5
 cd "$REPO"
-if sh "$NEW_SESSION" 'evil|inject' feature/x >/dev/null 2>&1; then
+if sh "$NEW_SESSION" --role developer 'evil|inject' feature/x >/dev/null 2>&1; then
 	bad "M5 new-session accepted a pipe in the session name (ledger injection)"
 else
 	ok "M5 new-session rejects a pipe in the session name"
 fi
 # a newline-bearing session name (forge a whole row)
 INJ=$(printf 'evil\n| forged | b | ** | t | working | now')
-if sh "$NEW_SESSION" "$INJ" feature/x >/dev/null 2>&1; then
+if sh "$NEW_SESSION" --role developer "$INJ" feature/x >/dev/null 2>&1; then
 	bad "M5 new-session accepted a newline in the session name (row forgery)"
 else
 	ok "M5 new-session rejects a newline in the session name"
 fi
 # a pipe in the claim-glob
-if sh "$NEW_SESSION" goodname feature/x "$WORK/wt-m5" 'src/**|forged' >/dev/null 2>&1; then
+if sh "$NEW_SESSION" --role developer goodname feature/x "$WORK/wt-m5" 'src/**|forged' >/dev/null 2>&1; then
 	bad "M5 new-session accepted a pipe in the claim-glob (ledger injection)"
 else
 	ok "M5 new-session rejects a pipe in the claim-glob"
@@ -297,7 +309,7 @@ cd "$REPO"
 echo seed > seed.txt; git_quiet add seed.txt; git_quiet commit -m "seed"
 LEDG="$REPO/.team/SESSIONS.md"
 NL_GLOB=$(printf 'src/**\nforged row')
-rc=0; sh "$NEW_SESSION" glob-nl feature/f1a "$WORK/wt-f1a" "$NL_GLOB" >/dev/null 2>&1 || rc=$?
+rc=0; sh "$NEW_SESSION" --role developer glob-nl feature/f1a "$WORK/wt-f1a" "$NL_GLOB" >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 2 ] && ! ledger_has_forgery "$LEDG"; then
 	ok "F1 new-session rejects a newline in the claim-glob (exit 2, no forged row)"
 else
@@ -309,7 +321,7 @@ cd "$REPO"
 echo seed > seed.txt; git_quiet add seed.txt; git_quiet commit -m "seed"
 LEDG="$REPO/.team/SESSIONS.md"
 NL_PATH=$(printf '%s/wt-f1c\nforged row' "$WORK")
-rc=0; sh "$NEW_SESSION" path-nl feature/f1b "$NL_PATH" 'src/**' >/dev/null 2>&1 || rc=$?
+rc=0; sh "$NEW_SESSION" --role developer path-nl feature/f1b "$NL_PATH" 'src/**' >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 2 ] && ! ledger_has_forgery "$LEDG"; then
 	ok "F1 new-session rejects a newline in the worktree-path (exit 2, no forged row)"
 else
@@ -354,6 +366,7 @@ setup_done_repo() {
 	DONE_SHA=$(git rev-parse HEAD)
 	seed_gate "$DONE_SHA" static reviewer PASS reviewer
 	printf 'T1 | class=static | author=me | sha=%s\n' "$DONE_SHA" >> "$REPO/.team/TASKS.md"
+	commit_ledger
 	git push origin HEAD:refs/heads/main >/dev/null 2>&1 || true
 }
 
@@ -664,6 +677,7 @@ git_quiet commit -m "work tplb"
 HEAD_SHA=$(git rev-parse HEAD)
 seed_gate "$HEAD_SHA" static reviewer PASS reviewer
 tpl_row done me "$HEAD_SHA" >> "$REPO/.team/TASKS.md"
+commit_ledger
 git push origin HEAD:refs/heads/main >/dev/null 2>&1 || true
 RC_OUT=$(sh "$RECONCILE" --tasks "$REPO/.team/TASKS.md" --ledger "$REPO/.team/GATES.md" --branch main 2>&1 || true)
 if printf '%s' "$RC_OUT" | grep -q '1 re-verified, 0 failed'; then
@@ -682,6 +696,142 @@ if printf '%s' "$DC_OUT" | grep -q 'DONE' && ! printf '%s' "$DC_OUT" | grep -qi 
 else
 	bad "TPL3 done-check could not read the template-format row: $(printf '%s' "$DC_OUT" | grep -i 'BLOCK\|unknown' | head -n1)"
 fi
+
+# ---------------------------------------------------------------- R (1.1.0 range gating)
+# The pre-push hook now gates EVERY commit in remote..tip (first-parent) against the
+# ledger AS COMMITTED AT THE TIP. A .team-only commit is exempt. Field review 0008, 3A.
+GATE_RANGE="$KIT_DIR/scripts/gate-check-range"
+GATED_PUSH="$KIT_DIR/scripts/gated-push"
+SWEEP="$KIT_DIR/scripts/worktree-sweep"
+
+# R1: two code commits + one ledger commit, both gated -> push passes; the ledger commit
+# itself needs NO row (no hollow self-signed row for the manager).
+setup_repo r1
+echo a > a.txt; git_quiet add a.txt; git_quiet commit -m "work a"; SHA_A=$(git rev-parse HEAD)
+echo b > b.txt; git_quiet add b.txt; git_quiet commit -m "work b"; SHA_B=$(git rev-parse HEAD)
+seed_gate "$SHA_A" static reviewer PASS reviewer
+seed_gate "$SHA_B" static reviewer PASS reviewer
+printf 'T1 | class=static | author=me | sha=%s\nT2 | class=static | author=me | sha=%s\n' "$SHA_A" "$SHA_B" >> "$REPO/.team/TASKS.md"
+commit_ledger
+if try_push; then ok "R1 code commits + an unrowed .team-only ledger commit on top: push passes"; else bad "R1 a correctly gated range with a .team-only tip was blocked"; fi
+
+# R2: a second push whose MIDDLE commit is ungated is blocked even though the tip
+# (the ledger commit) is exempt and the last code commit is gated.
+echo c > c.txt; git_quiet add c.txt; git_quiet commit -m "work c (ungated)"; SHA_C=$(git rev-parse HEAD)
+echo d > d.txt; git_quiet add d.txt; git_quiet commit -m "work d"; SHA_D=$(git rev-parse HEAD)
+seed_gate "$SHA_D" static reviewer PASS reviewer
+printf 'T4 | class=static | author=me | sha=%s\n' "$SHA_D" >> "$REPO/.team/TASKS.md"
+commit_ledger
+if try_push; then bad "R2 an ungated commit in the middle of the pushed range slipped through"; else ok "R2 ungated middle commit blocks the push (whole range is checked, not the tip)"; fi
+# R2b: gate it, re-commit the ledger, and the same range now passes (base = remote tip).
+seed_gate "$SHA_C" static reviewer PASS reviewer
+printf 'T3 | class=static | author=me | sha=%s\n' "$SHA_C" >> "$REPO/.team/TASKS.md"
+commit_ledger
+if try_push; then ok "R2b after gating the middle commit the range passes"; else bad "R2b gated range still blocked"; fi
+
+# R3: gate-check-range direct: a merge commit is checked once against its first parent
+# (the branch's own commits are not walked), and the work it brought in must be gated.
+setup_repo r3
+echo base > base.txt; git_quiet add base.txt; git_quiet commit -m "base"; BASE_SHA=$(git rev-parse HEAD)
+git_quiet checkout -b feature
+echo f > f.txt; git_quiet add f.txt; git_quiet commit -m "feature work"
+git_quiet checkout -
+git_quiet merge --no-ff feature -m "merge feature"; MERGE_SHA=$(git rev-parse HEAD)
+commit_ledger
+if sh "$GATE_RANGE" --tip HEAD --base "$BASE_SHA" >/dev/null 2>&1; then bad "R3 ungated merge commit passed the range check"; else ok "R3 an ungated merge commit fails the range check"; fi
+seed_gate "$MERGE_SHA" static reviewer PASS reviewer
+commit_ledger
+R3_OUT=$(sh "$GATE_RANGE" --tip HEAD --base "$BASE_SHA" 2>&1 || true)
+if printf '%s' "$R3_OUT" | grep -q 'gate-check-range: PASS (1 checked'; then ok "R3 a gated merge covers what it brought in: 1 checked (first-parent walk)"; else bad "R3 first-parent walk wrong: $(printf '%s' "$R3_OUT" | tail -n1)"; fi
+
+# R4: no usable base and no --allow-tip-only fails CLOSED (the server path); with it, the
+# tip only is checked with a warning (the hook path on a first push).
+setup_repo r4
+echo x > x.txt; git_quiet add x.txt; git_quiet commit -m "x"; X_SHA=$(git rev-parse HEAD)
+seed_gate "$X_SHA" static reviewer PASS reviewer
+commit_ledger
+if sh "$GATE_RANGE" --tip HEAD >/dev/null 2>&1; then bad "R4 no base and no fallback was not refused (server path must fail closed)"; else ok "R4 no usable base fails closed without --allow-tip-only"; fi
+R4_OUT=$(sh "$GATE_RANGE" --tip HEAD --allow-tip-only 2>&1 || true)
+if printf '%s' "$R4_OUT" | grep -q 'TIP ONLY'; then ok "R4 --allow-tip-only checks the tip and warns"; else bad "R4 --allow-tip-only did not warn: $(printf '%s' "$R4_OUT" | tail -n1)"; fi
+# R4b: with a baseline the range is bounded and checked without a warning.
+R4B_OUT=$(sh "$GATE_RANGE" --tip HEAD --baseline "$X_SHA" 2>&1 || true)
+if printf '%s' "$R4B_OUT" | grep -q 'base from the baseline'; then ok "R4b a baseline bounds the range"; else bad "R4b baseline not used: $(printf '%s' "$R4B_OUT" | head -n1)"; fi
+
+# R5: roles ledger present -> a PASS by an author with no role row fails CLOSED; a listed
+# reviewer passes; a listed manager is refused. Read from the TIP commit via the hook.
+setup_repo r5
+printf '| session | role |\n|---|---|\n| reviewer | reviewer |\n| boss | manager |\n' > .team/roles
+echo w > w.txt; git_quiet add w.txt; git_quiet commit -m "w"; W_SHA=$(git rev-parse HEAD)
+seed_gate "$W_SHA" static reviewer PASS stranger
+printf 'T1 | class=static | author=me | sha=%s\n' "$W_SHA" >> "$REPO/.team/TASKS.md"
+commit_ledger
+if try_push; then bad "R5 PASS by an author with no roles row was accepted"; else ok "R5 PASS by an unlisted author fails closed when .team/roles exists"; fi
+seed_gate "$W_SHA" static reviewer PASS boss
+commit_ledger
+if try_push; then bad "R5 manager-authored PASS was accepted"; else ok "R5 manager-authored PASS refused (role from the roles ledger at the tip)"; fi
+: > .team/GATES.md
+seed_gate "$W_SHA" static reviewer PASS reviewer
+commit_ledger
+if try_push; then ok "R5 a listed reviewer's PASS passes"; else bad "R5 a listed reviewer's PASS was blocked"; fi
+
+# R6: distinct lenses (opt-in): one author signing reviewer and qa for a presentational
+# commit is refused with TEAM_DISTINCT_LENSES=1 and accepted without it.
+setup_repo r6
+echo p > p.txt; git_quiet add p.txt; git_quiet commit -m "p"; P_SHA=$(git rev-parse HEAD)
+seed_gate "$P_SHA" presentational reviewer PASS gate-bot
+seed_gate "$P_SHA" presentational qa PASS gate-bot
+if sh "$GATE_CHECK" --sha "$P_SHA" --ledger "$REPO/.team/GATES.md" >/dev/null 2>&1; then ok "R6 one author on two lenses passes by default"; else bad "R6 default wrongly blocked a two-lens single author"; fi
+if TEAM_DISTINCT_LENSES=1 sh "$GATE_CHECK" --sha "$P_SHA" --ledger "$REPO/.team/GATES.md" >/dev/null 2>&1; then bad "R6 TEAM_DISTINCT_LENSES=1 did not block one author on two lenses"; else ok "R6 TEAM_DISTINCT_LENSES=1 blocks one author signing two lenses"; fi
+# R6b: distinct model (opt-in): row model= equal to the board's model= is refused.
+printf '%s | static | reviewer | PASS | reviewer | model=opus\n' "$P_SHA" > "$REPO/.team/GATES.md"
+printf 'T1 | class=static | author=me | model=opus | sha=%s\n' "$P_SHA" > "$REPO/.team/TASKS.md"
+if TEAM_DISTINCT_MODEL=1 sh "$GATE_CHECK" --sha "$P_SHA" --ledger "$REPO/.team/GATES.md" --board "$REPO/.team/TASKS.md" >/dev/null 2>&1; then bad "R6b TEAM_DISTINCT_MODEL=1 accepted a PASS on the work's own model"; else ok "R6b TEAM_DISTINCT_MODEL=1 blocks a PASS whose model= equals the work's"; fi
+printf '%s | static | reviewer | PASS | reviewer | model=sonnet\n' "$P_SHA" > "$REPO/.team/GATES.md"
+if TEAM_DISTINCT_MODEL=1 sh "$GATE_CHECK" --sha "$P_SHA" --ledger "$REPO/.team/GATES.md" --board "$REPO/.team/TASKS.md" >/dev/null 2>&1; then ok "R6b a different model= passes"; else bad "R6b a different model= was blocked"; fi
+
+# R7: gated-push: refuses to push a red range, pushes a green one, in one process.
+setup_repo r7
+echo g > g.txt; git_quiet add g.txt; git_quiet commit -m "g"; G_SHA=$(git rev-parse HEAD)
+commit_ledger
+if sh "$GATED_PUSH" origin main >/dev/null 2>&1; then bad "R7 gated-push pushed an ungated commit"; else ok "R7 gated-push refuses a red range"; fi
+if git rev-parse -q --verify refs/remotes/origin/main >/dev/null 2>&1; then bad "R7 something reached origin/main after a red gated-push"; else ok "R7 nothing reached the remote on a red gated-push"; fi
+seed_gate "$G_SHA" static reviewer PASS reviewer
+commit_ledger
+if sh "$GATED_PUSH" origin main >/dev/null 2>&1 && [ "$(git rev-parse origin/main)" = "$(git rev-parse HEAD)" ]; then ok "R7 gated-push pushes a green range and origin/main is the tip"; else bad "R7 gated-push failed on a green range"; fi
+
+# R8: done-check's git test is ancestry, not "HEAD not ahead": a task's SHA merged into
+# origin/main passes from a worktree whose HEAD has moved on.
+setup_repo r8
+echo m > m.txt; git_quiet add m.txt; git_quiet commit -m "m"; M_SHA=$(git rev-parse HEAD)
+seed_gate "$M_SHA" static reviewer PASS reviewer
+printf 'TM | class=static | author=me | sha=%s\n' "$M_SHA" >> "$REPO/.team/TASKS.md"
+commit_ledger
+try_push || true
+echo later > later.txt; git_quiet add later.txt; git_quiet commit -m "later, unpushed"
+if sh "$DONE_CHECK" --task TM --branch main --no-artifact --ledger "$REPO/.team/GATES.md" --tasks "$REPO/.team/TASKS.md" >/dev/null 2>&1; then ok "R8 done-check passes a merged SHA although HEAD is ahead (ancestry test)"; else bad "R8 done-check blocked a merged SHA because HEAD moved on"; fi
+if sh "$DONE_CHECK" --task TM --branch main --no-artifact --no-gate --sha "$(git rev-parse HEAD)" --class static --author me >/dev/null 2>&1; then bad "R8 done-check passed an unpushed SHA"; else ok "R8 done-check blocks a SHA that is not on origin/main"; fi
+
+# R9: worktree-sweep: dry run lists a merged, clean worktree as REMOVE and touches nothing;
+# --apply removes it and keeps an unmerged one.
+setup_repo r9
+echo s > s.txt; git_quiet add s.txt; git_quiet commit -m "s"
+git_quiet branch -f main HEAD 2>/dev/null || true
+try_push || true
+git_quiet worktree add "$WORK/wt-r9-merged" -b merged-branch HEAD
+git_quiet worktree add "$WORK/wt-r9-open" -b open-branch HEAD
+( cd "$WORK/wt-r9-open" && echo o > o.txt && git add o.txt && TEAM_SESSION=opener TEAM_LEDGER="$REPO/.team/SESSIONS.md" git commit -q -m "open work" )
+SW_OUT=$(sh "$SWEEP" 2>&1 || true)
+if printf '%s' "$SW_OUT" | grep -q "REMOVE  .*wt-r9-merged" && printf '%s' "$SW_OUT" | grep -q "keep    .*wt-r9-open" && [ -d "$WORK/wt-r9-merged" ]; then ok "R9 sweep dry run marks merged REMOVE, unmerged keep, removes nothing"; else bad "R9 sweep dry run wrong: $(printf '%s' "$SW_OUT" | tr '\n' ';' | cut -c1-200)"; fi
+sh "$SWEEP" --apply >/dev/null 2>&1 || true
+if [ ! -d "$WORK/wt-r9-merged" ] && [ -d "$WORK/wt-r9-open" ]; then ok "R9 sweep --apply removed the merged worktree and kept the unmerged one"; else bad "R9 sweep --apply removed the wrong worktree"; fi
+
+# R10: new-session requires --role and records it in the shared roles ledger; self-test
+# reports the role as resolved.
+setup_repo r10
+echo seed > seed.txt; git_quiet add seed.txt; git_quiet commit -m "seed"
+if sh "$NEW_SESSION" norole feature/r10 "$WORK/wt-r10-a" >/dev/null 2>&1; then bad "R10 new-session accepted a session with no --role"; else ok "R10 new-session refuses a session with no --role"; fi
+if sh "$NEW_SESSION" --role reviewer rev-1 feature/r10b "$WORK/wt-r10-b" >/dev/null 2>&1 && grep -q '^| rev-1 | reviewer |' .team/roles && grep -q '^ROLE=reviewer' "$WORK/wt-r10-b/.team/whoami"; then ok "R10 new-session --role writes ROLE= and the roles ledger row"; else bad "R10 new-session --role did not record the role"; fi
+if ( cd "$WORK/wt-r10-b" && TEAM_ROLES="$REPO/.team/roles" sh "$KIT_DIR/scripts/self-test" 2>&1 | grep -q "role: this session resolves to 'reviewer'" ); then ok "R10 self-test sees the session's role resolve"; else bad "R10 self-test did not report the resolved role"; fi
 
 # ---------------------------------------------------------------- verdict
 printf '\nintegration-test: %d passed, %d failed\n' "$PASS_N" "$FAIL_N"

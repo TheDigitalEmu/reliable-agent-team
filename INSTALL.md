@@ -52,6 +52,25 @@ Core ships ONLY these two universal hooks. Any project-specific hooks (see the p
 HOOKS section) are installed separately with the project's own tooling, not by install-hooks.
 Confirm the hooks are executable and registered before proceeding.
 
+The push hook gates EVERY commit in the push (first-parent) against `.team/` as committed at
+the pushed tip, not the working tree. The convention is: code commits, then one `.team`-only
+ledger commit, then push (`scripts/gated-push` does the check and the push in one process).
+Retrofitting onto a repository with history: set `TEAM_GATE_BASELINE` to the last commit before
+adoption so earlier history is never gated.
+
+## Step 2a: Create the roles ledger (the role guards have no input without it)
+Copy `templates/roles` to `.team/roles` and delete the EXAMPLE rows. Every session is then
+started with `enforcement/new-session --role <role> ...`, which appends its row. gate-check reads
+this ledger: a PASS by a `manager` is refused, and once the ledger exists a PASS by an author
+with no row fails closed. The manager wall (`deny-manager-code-write`) is wired by the plugin as a
+PreToolUse hook on Write and Edit; it acts only when the session's role resolves. Without this
+step every role guard fails open, which `self-test` reports as FIX.
+
+## Step 2c (recommended): Put the same gate on the server
+Copy `ci/github/gate-check.yml` to `.github/workflows/`, set `GATE_BASELINE` and `KIT_REF`, and
+make your deploy job run `scripts/require-gate-run <sha>` first (`ci/github/README.md` has the
+snippet). A local hook bites only the clone it is in; the server check bites every path.
+
 ## Step 2b: Ensure the security dependency (owasp-advisor)
 The kit's `security` gate is only meaningful if the security agent has the owasp-advisor skill. Run
 `sh enforcement/ensure-owasp`. It detects an existing install and leaves it untouched (warning if it
@@ -68,6 +87,10 @@ a worktree in the parent folder (`../<repo>-x`): that spreads stray folders acro
 a real incident this kit was built from (roadblock F20). The main checkout stays on the integration branch
 as the reference tree; feature work happens in `.worktrees/` off it, never in a shared checkout under
 another live session. Remove each worktree and kill its dev server the moment its job ends.
+Inside Claude Code, the Agent tool's own worktrees (`.claude/worktrees/agent-*`) count as session
+isolation; you do not need new-session for a subagent, only a `--role` row for whoever authors
+gate rows. When finished worktrees pile up, `scripts/worktree-sweep` lists the merged, clean ones
+and `--apply` removes them; it never touches unmerged work or a dirty tree.
 
 ## Step 4: Run the self-test and refuse to start until it is green
 Run `scripts/self-test`. It confirms the substrate is actually in place: hooks installed, a worktree
@@ -87,6 +110,9 @@ worse than none, so treat a red here as a hard stop.
 - Confirm `scripts/done-check` (greps git, the gate ledger, and the live URL), `scripts/gate-check`
   (verifies gates and non-self-sign-off), and `scripts/reconcile` (re-reads the board, re-drives
   stalled items, prompts a RETROSPECTIVE entry on a gate FAIL) all run.
+- Push the main line only through `scripts/gated-push`: it runs the range check and pushes on a
+  green result in one process. A push chained by hand after an echo or a tail is how two red
+  pushes went out on one adoption.
 - Schedule `scripts/reconcile` on a timer for autonomous runs so a pause advances work instead of
   ending it.
 
@@ -115,13 +141,12 @@ fails open (a slow or offline GitHub never blocks a session). Applying an update
 - [ ] `SESSIONS.md`, `GATES.md`, `TASKS.md`, `RETROSPECTIVE.md` in place, headers kept, example rows
       cleared.
 - [ ] `enforcement/install-hooks` run; `pre-commit-claim` and `pre-push-gate` active.
-- [ ] `enforcement/new-session` run; first worktree created; main checkout is the reference tree.
+- [ ] `.team/roles` created from `templates/roles`; every session started with `--role`.
+- [ ] `enforcement/new-session --role ...` run; first worktree created; main checkout is the
+      reference tree.
 - [ ] `scripts/self-test` exits 0.
 - [ ] `tests/integration-test` exits 0 (the guards actually block, proven end to end).
 - [ ] `scripts/done-check`, `gate-check`, `reconcile` runnable; `reconcile` scheduled for autonomous
-      runs.
+      runs; pushes go through `scripts/gated-push`.
+- [ ] (recommended) `ci/github/gate-check.yml` installed with `GATE_BASELINE` and `KIT_REF` set.
 - [ ] NO real work started before the self-test is green.
-
-NOTE FOR THE MANAGER: the exact invocation names and paths above match the register's descriptions.
-Reconcile them against the actual filenames and the ledger field names once the enforcement/ and
-scripts/ lanes land; the ledger templates flag every field that may need reconciliation.

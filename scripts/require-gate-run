@@ -1,0 +1,65 @@
+#!/bin/sh
+# require-gate-run : succeed only when the server-side Gate check run for a commit is green.
+#
+# Run on a GitHub-hosted runner by a deploy job BEFORE anything reaches a server. It
+# succeeds only when the newest "Gate check" workflow run (ci/github/gate-check.yml,
+# copied into .github/workflows/) for a push of SHA to the protected branch completed with
+# conclusion success. It waits while that run is queued or in progress (it starts with the
+# same push), up to about ten minutes, then fails closed. Any other conclusion, no run at
+# all, or an API error fails the job, so a deploy never happens for an ungated commit, on
+# the automatic path and on a hand-started (workflow_dispatch) run alike.
+#
+# USAGE
+#   require-gate-run <full-40-char-sha>
+#
+# Needs GH_TOKEN (the job's own token, permissions actions: read) and GITHUB_REPOSITORY,
+# both set by GitHub Actions, and gh on PATH (preinstalled on GitHub-hosted runners).
+# Optional: TEAM_PROTECTED_BRANCH (default main), TEAM_GATE_WORKFLOW (default gate-check.yml).
+#
+# EXIT CODES
+#   0  the Gate check run for SHA succeeded.
+#   1  it failed, is missing, or is still running after the wait. Deploy refused.
+#   2  bad SHA or missing environment.
+
+set -eu
+
+SHA="${1:-}"
+case "$SHA" in
+  '' | *[!0-9a-f]*) echo "require-gate-run: not a commit SHA: $SHA" >&2; exit 2 ;;
+esac
+[ "${#SHA}" -eq 40 ] || { echo "require-gate-run: need the full 40 character SHA: $SHA" >&2; exit 2; }
+: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is not set}"
+BRANCH="${TEAM_PROTECTED_BRANCH:-main}"
+WORKFLOW="${TEAM_GATE_WORKFLOW:-gate-check.yml}"
+
+URL="repos/${GITHUB_REPOSITORY}/actions/workflows/${WORKFLOW}/runs?head_sha=${SHA}&branch=${BRANCH}&event=push&per_page=1"
+TRIES=0
+MAX_TRIES=40
+
+while :; do
+  ROW=$(gh api "$URL" --jq '.workflow_runs[0] // empty | [.status, (.conclusion // "none"), .html_url] | @tsv' 2>/dev/null || true)
+  if [ -z "$ROW" ]; then
+    STATUS=missing; CONCLUSION=none; LINK=none
+  else
+    STATUS=$(printf '%s' "$ROW" | cut -f1)
+    CONCLUSION=$(printf '%s' "$ROW" | cut -f2)
+    LINK=$(printf '%s' "$ROW" | cut -f3)
+  fi
+
+  if [ "$STATUS" = completed ]; then
+    if [ "$CONCLUSION" = success ]; then
+      echo "Gate check passed for $SHA ($LINK)."
+      exit 0
+    fi
+    echo "Gate check for $SHA concluded $CONCLUSION ($LINK). Deploy refused: record the missing gates in the ledger, commit .team, push again." >&2
+    exit 1
+  fi
+
+  TRIES=$((TRIES + 1))
+  if [ "$TRIES" -ge "$MAX_TRIES" ]; then
+    echo "Gate check for $SHA is $STATUS after waiting. Deploy refused (fails closed)." >&2
+    exit 1
+  fi
+  echo "Gate check for $SHA is $STATUS; waiting ($TRIES of $MAX_TRIES)."
+  sleep 15
+done

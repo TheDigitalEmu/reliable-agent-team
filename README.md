@@ -33,7 +33,11 @@ and it is honest that it is n equals 1 (see the Limits section of `ROADBLOCK-REG
   procedure. This is the document that decides everything else.
 - `enforcement/` : the actual guards a new project copies in (git hooks, a gate ledger checker, a
   worktree setup, a done-check). Installed, not described.
-- `scripts/` : the runnable checks (definition-of-done check, team self-test, reconcile).
+- `scripts/` : the runnable checks (definition-of-done check, team self-test, reconcile), the
+  range gate check the push hook and the server both run, `gated-push` (check and push in one
+  process), and `worktree-sweep`.
+- `ci/` : the server-side gate as a GitHub workflow to copy in, with `require-gate-run` for a
+  deploy job, so the rule is the same on every path to the main line.
 - `templates/` : copy-paste starting artifacts (rulebook, role definitions, claim ledger, delegation
   log format, hand-off template) so a new team starts from working files.
 - `why/` : the reasoning, demoted here on purpose. Humans read this; the machinery does not need it.
@@ -54,8 +58,8 @@ rows of `ROADBLOCK-REGISTER.md`. When a change bumps `VERSION` (and so tells the
 defined in `VERSIONING.md`. Why any of this care is warranted, read `WHY-KAREN.md`.
 
 ## Portability (what this ships for, and what it does not)
-The packaging is Claude Code specific: a plugin, a SessionStart hook, and a clone into
-`~/.claude/skills/`. The strongest guards are git lifecycle (a pre-commit claim hook, a pre-push
+The packaging is Claude Code specific: a plugin with two skills, a SessionStart version check and
+a PreToolUse manager wall. The strongest guards are git lifecycle (a pre-commit claim hook, a pre-push
 SHA-bound gate), so they only bite work that flows through git commits and pushes. On a host without
 that lifecycle, or a different agent runtime, those hooks never fire and that work is ungated. What is
 portable is the SHAPE, not this packaging: in-repo worktrees only; "done" is a script's exit against a

@@ -32,12 +32,21 @@ use the reliable-agent-team update skill, which fetches and applies the latest v
    Copy only commands the user has read and trusts. Never paste a line that fetches remote content and
    pipes it into a shell.
 4. Install the two universal hooks (Step 2) with `${CLAUDE_PLUGIN_ROOT}/enforcement/install-hooks`.
-   Then ensure the security dependency is present: run
+   Tell the user the push convention the hook enforces: code commits, one `.team`-only ledger
+   commit on top, then `scripts/gated-push`. On a repository with history, set `TEAM_GATE_BASELINE`
+   to the last pre-adoption commit. Then ensure the security dependency is present: run
    `sh ${CLAUDE_PLUGIN_ROOT}/enforcement/ensure-owasp`. It installs the
    owasp-advisor skill if absent and leaves an existing copy untouched (warning
    if it is behind). The RAT security gate is a hollow checkbox without it, so if
    this exits non-zero, stop and resolve it before relying on the gate.
-5. Create the first worktree INSIDE the repo (Step 3). Never in the parent folder.
+4a. Create the roles ledger (Step 2a): copy `templates/roles` to `.team/roles`, delete the EXAMPLE
+   rows, and start every session with `new-session --role <role>`. Without it the role guards fail
+   open and self-test reports FIX.
+4b. Offer the server-side gate (Step 2c): copy `ci/github/gate-check.yml` into `.github/workflows/`
+   with `GATE_BASELINE` and a pinned `KIT_REF`, and the `require-gate-run` job in the deploy workflow.
+5. Create the first worktree INSIDE the repo (Step 3) with `--role`. Never in the parent folder.
+   Inside Claude Code, the Agent tool's own worktrees count as isolation; `scripts/worktree-sweep`
+   clears merged ones later.
 6. Run `${CLAUDE_PLUGIN_ROOT}/scripts/self-test` and refuse to start real work until it exits 0
    (Step 4).
 7. Run `${CLAUDE_PLUGIN_ROOT}/tests/integration-test` to prove the guards actually block (Step 5).

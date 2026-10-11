@@ -1,0 +1,22 @@
+# ROLES: the session-to-role ledger (machine-read; copy to .team/roles)
+#
+# One row per session id that may author a gate row or a commit. The role guards read
+# this file, not roles.md (that is the prose definition of each role):
+#   - gate-check: a PASS whose author is NOT listed here fails CLOSED once this file exists
+#     (an unverifiable lens), and a PASS by a `manager` is always refused.
+#   - pre-commit-role / deny-manager-code-write: a session whose role is `manager` cannot
+#     commit or write application code.
+#   - self-test: reports FIX when this file is missing or the current session's role does
+#     not resolve.
+# `enforcement/new-session --role <role> <session> <branch>` appends the row for you.
+# Roles: manager | architect | researcher | developer | security | reviewer | qa
+#
+# Format: `session | role`. A leading table pipe is tolerated; blank and # lines ignored.
+
+| session | role |
+|---|---|
+| manager-1 (EXAMPLE) | manager |
+| dev-a (EXAMPLE) | developer |
+| reviewer-1 (EXAMPLE) | reviewer |
+| security-1 (EXAMPLE) | security |
+| qa-1 (EXAMPLE) | qa |
