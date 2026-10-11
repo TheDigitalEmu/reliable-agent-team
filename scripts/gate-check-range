@@ -51,6 +51,19 @@
 # EXEMPT COMMITS (printed as "skip", never checked)
 #   - team-only : every changed path (against the first parent) is under the team dir.
 #   - identical : the commit's tree equals its first parent's (nothing to gate).
+#   - by <teamdir>/gate-exempt (1.2.0, thread 0010): the PROJECT's own ruling on which
+#     paths are ungated, read AT THE TIP like the ledger. One entry per line, blank and
+#     # lines ignored; three kinds:
+#       exempt <path>   every changed path matching it makes the commit exempt
+#       keep <path>     a path under an exempt entry that is NOT exempt (shipped docs)
+#       never <path>    a path that is never exempt whatever else matches
+#     A commit is exempt only when EVERY changed path matches an exempt entry and NONE
+#     matches a keep or never entry. Mixed commits are checked. Absent or empty file:
+#     the two built-in exemptions only. <path> is matched against the repo-relative
+#     changed path (from git diff-tree --no-renames, so a rename shows both sides): a
+#     trailing "/" means the directory and everything under it; an entry with * ? [ is
+#     a shell glob matched against the whole path; anything else is an exact path or a
+#     directory. templates/gate-exempt is the starting file.
 #   A merge commit is checked once, against its first parent, so a gated merge covers the
 #   commits it brought in; the branch's own commits are not walked (--first-parent).
 #
@@ -70,7 +83,7 @@
 set -eu
 
 PROG="$(basename "$0")"
-usage() { sed -n '2,62p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,81p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { code="$1"; shift; printf '%s: %s\n' "$PROG" "$*" >&2; exit "$code"; }
 
 TIP=""; BASE=""; CANDIDATES=""; BASELINE="${TEAM_GATE_BASELINE:-}"
@@ -164,6 +177,56 @@ else
   extract "$TEAMDIR/roles"    "$WORK/roles"    && ROLES="$WORK/roles"    || true
 fi
 
+# The project's exemption ruling (<teamdir>/gate-exempt), from the same source as the
+# ledger. Parsed once into three lists, one entry per line.
+EXEMPT_FILE=""
+if [ "$SOURCE" = "worktree" ]; then
+  [ -f "$TEAMDIR/gate-exempt" ] && EXEMPT_FILE="$TEAMDIR/gate-exempt"
+else
+  extract "$TEAMDIR/gate-exempt" "$WORK/gate-exempt" && EXEMPT_FILE="$WORK/gate-exempt" || true
+fi
+EX_EXEMPT=""; EX_KEEP=""; EX_NEVER=""
+if [ -n "$EXEMPT_FILE" ]; then
+  EX_EXEMPT="$(sed 's/\r$//; s/#.*$//' "$EXEMPT_FILE" | awk '$1 == "exempt" && NF >= 2 { print $2 }')"
+  EX_KEEP="$(sed 's/\r$//; s/#.*$//' "$EXEMPT_FILE"   | awk '$1 == "keep"   && NF >= 2 { print $2 }')"
+  EX_NEVER="$(sed 's/\r$//; s/#.*$//' "$EXEMPT_FILE"  | awk '$1 == "never"  && NF >= 2 { print $2 }')"
+fi
+
+# path_matches <path> <entry>: trailing "/" = directory prefix; glob chars = shell glob on
+# the whole path; otherwise an exact path or a directory of that name.
+path_matches() {
+  p="$1"; e="$2"
+  case "$e" in
+    */)        case "$p" in "$e"*) return 0 ;; esac ;;
+    *[\*\?\[]*) # shellcheck disable=SC2254
+               case "$p" in $e) return 0 ;; esac ;;
+    *)         case "$p" in "$e"|"$e"/*) return 0 ;; esac ;;
+  esac
+  return 1
+}
+# path_in_list <path> <newline-separated entries>: prints the matching entry, if any.
+path_in_list() {
+  p="$1"
+  printf '%s\n' "$2" | while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    if path_matches "$p" "$e"; then printf '%s\n' "$e"; break; fi
+  done
+}
+# project_exempt <changed-paths>: prints the exempt entry that covered the commit when
+# EVERY path matches an exempt entry and NONE matches keep or never; else nothing.
+project_exempt() {
+  [ -n "$EX_EXEMPT" ] || return 0
+  covered=""
+  printf '%s\n' "$1" | while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if [ -n "$(path_in_list "$p" "$EX_NEVER")" ]; then echo "NO"; break; fi
+    if [ -n "$(path_in_list "$p" "$EX_KEEP")" ];  then echo "NO"; break; fi
+    hit="$(path_in_list "$p" "$EX_EXEMPT")"
+    if [ -z "$hit" ]; then echo "NO"; break; fi
+    echo "YES $hit"
+  done | awk '$1 == "NO" { bad = 1 } $1 == "YES" { if (first == "") first = $2 } END { if (!bad && first != "") print first }'
+}
+
 [ -n "$LEDGER" ] || die 2 "no gate ledger at the tip commit ($TIP:$TEAMDIR/GATES.md or $TEAMDIR/gates/). The ledger of record is the committed one: commit .team (a .team-only commit on top of the code commits) and push again."
 
 # ---------------------------------------------------------------- exemptions
@@ -178,6 +241,8 @@ exempt_reason() {
   fi
   if [ -z "$changed" ]; then printf 'identical'; return 0; fi
   if ! printf '%s\n' "$changed" | grep -v "^$TEAMDIR/" | grep -q .; then printf 'team-only'; return 0; fi
+  by="$(project_exempt "$changed")"
+  if [ -n "$by" ]; then printf 'project:%s' "$by"; return 0; fi
   printf ''
 }
 
@@ -213,6 +278,11 @@ for c in $COMMITS; do
     printf 'skip  %s team-only (ledger commit): %s\n' "$short" "$subject"
     SKIPPED=$((SKIPPED + 1)); continue
   fi
+  case "$why" in
+    project:*)
+      printf 'skip  %s exempt by %s/gate-exempt (every path under "%s"): %s\n' "$short" "$TEAMDIR" "${why#project:}" "$subject"
+      SKIPPED=$((SKIPPED + 1)); continue ;;
+  esac
   CHECKED=$((CHECKED + 1))
   set +e
   if [ -n "$ROLES" ]; then

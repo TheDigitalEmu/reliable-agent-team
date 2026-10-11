@@ -66,6 +66,14 @@ with no row fails closed. The manager wall (`deny-manager-code-write`) is wired 
 PreToolUse hook on Write and Edit; it acts only when the session's role resolves. Without this
 step every role guard fails open, which `self-test` reports as FIX.
 
+## Step 2b (optional): Declare the project's own exemptions
+If the owner has ruled that some paths need no gate rows (documentation, discussion threads),
+copy `templates/gate-exempt` to `.team/gate-exempt`, uncomment and edit the entries, and name
+the decision that set them in a `#` line. `exempt` names the ungated paths, `keep` names paths
+under them that still ship into the product and stay gated, `never` names paths that are code
+whatever else matches. The file is read at the pushed tip by the hook and the server alike, so
+commit it with the ledger. Absent, only `.team`-only and tree-identical commits are exempt.
+
 ## Step 2c (recommended): Put the same gate on the server
 Copy `ci/github/gate-check.yml` to `.github/workflows/`, set `GATE_BASELINE` and `KIT_REF`, and
 make your deploy job run `scripts/require-gate-run <sha>` first (`ci/github/README.md` has the

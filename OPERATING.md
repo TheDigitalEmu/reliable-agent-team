@@ -102,6 +102,11 @@ The ledger of record is `.team/` AS COMMITTED AT THE PUSHED TIP. A ledger held i
 working tree is invisible to the server and, since 1.1.0, to the local hook too. If a
 push is refused with "the tip carries no committed ledger", you skipped step 2.
 
+Paths the owner has ruled ungated (documentation, discussion) go in `.team/gate-exempt`
+(`exempt`, `keep`, `never` lines; see `templates/gate-exempt`). It is read at the tip
+like the ledger, so the hook and the server apply one ruling. A commit is exempt only
+when every changed path is exempt and none is kept or never; mixed commits are gated.
+
 Retrofit onto an existing repository: set `TEAM_GATE_BASELINE` (and `GATE_BASELINE` in
 the workflow) to the last commit before adoption; history before it is never gated.
 
