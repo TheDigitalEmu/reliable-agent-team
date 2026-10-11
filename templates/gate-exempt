@@ -1,0 +1,31 @@
+# GATE-EXEMPT: the project's ruling on which paths need no gate rows (copy to .team/gate-exempt)
+#
+# Read by scripts/gate-check-range AT THE PUSHED TIP (like the ledger), by the local push
+# hook and by the server workflow alike, so there is one rule set. One entry per line.
+# This file is a RULING, not a convenience: name the decision that set it in a # line, and
+# change it only with a new decision.
+#
+#   exempt <path>   every changed path matching it makes the commit exempt
+#   keep <path>     a path under an exempt entry that is NOT exempt (for example docs the
+#                   deploy ships into the running product)
+#   never <path>    a path that is never exempt whatever else matches
+#
+# A commit is exempt only when EVERY changed path matches an exempt entry and NONE matches
+# a keep or never entry. A commit that mixes an exempt path with anything else is checked.
+# A rename out of code into an exempt directory shows both paths and is checked.
+# Path forms: "docs/" is the directory and everything under it; an entry with * ? or [ is
+# a shell glob against the whole repo-relative path ("*.md" is every Markdown file at any
+# depth); anything else is an exact file or a directory of that name.
+# Absent or empty: only the built-in exemptions apply (.team-only and tree-identical).
+#
+# Decision: <D-nn, date, who ruled>
+#
+# EXAMPLE (uncomment and edit; this set exempts documentation but keeps shipped docs gated):
+# exempt docs/
+# exempt discussion/
+# exempt README.md
+# keep docs/guide/help-content-seed.md
+# keep docs/eligibility-documents/
+# never tools/
+# never .github/
+# never src/

@@ -38,8 +38,9 @@ an ancestor of this push, else `GATE_BASELINE`. Each code commit must have, in `
 as committed at the tip, the PASS rows its change class requires, bound to its full SHA, by an
 author who is not the work author (from `.team/TASKS.md` at the tip), with no sticky non-PASS
 row, and whose role resolves in `.team/roles` when that ledger exists. A `.team`-only commit is
-exempt: it is the ledger commit. A red run lists the offending SHAs; the next push re-checks
-them because the base is the last GREEN tip.
+exempt: it is the ledger commit. So is a commit whose every changed path the project has ruled
+ungated in `.team/gate-exempt` (read at the tip, same file the local hook reads). A red run lists
+the offending SHAs; the next push re-checks them because the base is the last GREEN tip.
 
 ## The push convention this needs
 

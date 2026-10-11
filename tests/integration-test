@@ -833,6 +833,53 @@ if sh "$NEW_SESSION" norole feature/r10 "$WORK/wt-r10-a" >/dev/null 2>&1; then b
 if sh "$NEW_SESSION" --role reviewer rev-1 feature/r10b "$WORK/wt-r10-b" >/dev/null 2>&1 && grep -q '^| rev-1 | reviewer |' .team/roles && grep -q '^ROLE=reviewer' "$WORK/wt-r10-b/.team/whoami"; then ok "R10 new-session --role writes ROLE= and the roles ledger row"; else bad "R10 new-session --role did not record the role"; fi
 if ( cd "$WORK/wt-r10-b" && TEAM_ROLES="$REPO/.team/roles" sh "$KIT_DIR/scripts/self-test" 2>&1 | grep -q "role: this session resolves to 'reviewer'" ); then ok "R10 self-test sees the session's role resolve"; else bad "R10 self-test did not report the resolved role"; fi
 
+# ---------------------------------------------------------------- E (1.2.0 project exemptions)
+# .team/gate-exempt, read at the tip, lets a project rule which paths carry no gate rows
+# (thread 0010). exempt / keep / never; every path must match exempt and none keep or never.
+setup_repo e1
+printf 'exempt docs/\nexempt *.md\nkeep docs/shipped/\nnever tools/\n' > .team/gate-exempt
+mkdir -p docs/shipped tools src
+echo seed > seed.txt; git_quiet add seed.txt; git_quiet commit -m "seed"; E_BASE=$(git rev-parse HEAD)
+# E1: docs-only commit, no rows -> exempt.
+echo d > docs/a.md; git_quiet add docs/a.md; git_quiet commit -m "docs only"
+commit_ledger
+E1_OUT=$(sh "$GATE_RANGE" --tip HEAD --base "$E_BASE" 2>&1 || true)
+if printf '%s' "$E1_OUT" | grep -q 'exempt by .team/gate-exempt (every path under "docs/")' && printf '%s' "$E1_OUT" | grep -q 'gate-check-range: PASS'; then ok "E1 docs-only commit is exempt by .team/gate-exempt with the reason printed"; else bad "E1 docs-only commit not exempt: $(printf '%s' "$E1_OUT" | grep -v '^skip' | head -n2 | tr '\n' ';')"; fi
+# E2: docs plus one code path -> checked (and blocked: no rows).
+echo d2 > docs/b.md; echo c > src/c.js; git_quiet add docs/b.md src/c.js; git_quiet commit -m "docs plus code"; E2_SHA=$(git rev-parse HEAD)
+commit_ledger
+if sh "$GATE_RANGE" --tip HEAD --base "$E_BASE" >/dev/null 2>&1; then bad "E2 a commit mixing docs and code was exempt"; else ok "E2 docs plus a code path is checked, not exempt"; fi
+seed_gate "$E2_SHA" static reviewer PASS reviewer; commit_ledger
+# E3: a keep path under an exempt prefix -> checked.
+echo s > docs/shipped/seed.md; git_quiet add docs/shipped/seed.md; git_quiet commit -m "shipped doc"; E3_SHA=$(git rev-parse HEAD)
+commit_ledger
+if sh "$GATE_RANGE" --tip HEAD --base "$E_BASE" >/dev/null 2>&1; then bad "E3 a keep path under an exempt prefix was exempt"; else ok "E3 a keep path under an exempt prefix is checked"; fi
+seed_gate "$E3_SHA" static reviewer PASS reviewer; commit_ledger
+# E4: a never path alongside exempt paths -> checked.
+echo t > tools/x.md; echo d3 > docs/c.md; git_quiet add tools/x.md docs/c.md; git_quiet commit -m "tools and docs"; E4_SHA=$(git rev-parse HEAD)
+commit_ledger
+if sh "$GATE_RANGE" --tip HEAD --base "$E_BASE" >/dev/null 2>&1; then bad "E4 a never path was exempt because the other paths were"; else ok "E4 a never path is checked even when every other path is exempt"; fi
+seed_gate "$E4_SHA" static reviewer PASS reviewer; commit_ledger
+# E5: a rename from src/ into docs/ shows both paths -> checked.
+git_quiet mv src/c.js docs/c.js; git_quiet commit -m "rename code into docs"; E5_SHA=$(git rev-parse HEAD)
+commit_ledger
+if sh "$GATE_RANGE" --tip HEAD --base "$E_BASE" >/dev/null 2>&1; then bad "E5 a rename out of code into docs/ was exempt"; else ok "E5 a rename from src/ into docs/ is checked (both paths seen)"; fi
+seed_gate "$E5_SHA" static reviewer PASS reviewer; commit_ledger
+# E6: the whole range is green once every checked commit has rows, and a root-level
+# Markdown file matches the "*.md" glob entry.
+echo r > NOTES.md; git_quiet add NOTES.md; git_quiet commit -m "root md"
+commit_ledger
+E6_OUT=$(sh "$GATE_RANGE" --tip HEAD --base "$E_BASE" 2>&1 || true)
+if printf '%s' "$E6_OUT" | grep -q 'gate-check-range: PASS (4 checked'; then ok "E6 range green: 4 checked, docs and root *.md exempt, keep/never/rename/mixed gated"; else bad "E6 unexpected tally: $(printf '%s' "$E6_OUT" | tail -n1)"; fi
+# E7: the ruling is read AT THE TIP: an exemption added only in the working tree does nothing.
+setup_repo e7
+mkdir -p docs
+echo seed > seed.txt; git_quiet add seed.txt; git_quiet commit -m "seed"; E7_BASE=$(git rev-parse HEAD)
+echo d > docs/a.md; git_quiet add docs/a.md; git_quiet commit -m "docs only"
+commit_ledger
+printf 'exempt docs/\n' > .team/gate-exempt
+if sh "$GATE_RANGE" --tip HEAD --base "$E7_BASE" >/dev/null 2>&1; then bad "E7 an uncommitted gate-exempt was honoured (must be read at the tip)"; else ok "E7 gate-exempt is read at the tip; a working-tree copy is ignored"; fi
+
 # ---------------------------------------------------------------- verdict
 printf '\nintegration-test: %d passed, %d failed\n' "$PASS_N" "$FAIL_N"
 [ "$FAIL_N" -eq 0 ] || exit 1
