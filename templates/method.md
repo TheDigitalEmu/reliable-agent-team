@@ -34,4 +34,10 @@ anything, except a row the team cannot move without the owner's decision.
   they are not blocked.
 - The promise assumes rows of similar size, and the first week has no history.
 - Facts from memory and relayed claims in chat: no check.
-- Two dispatches at the same moment can both pass the cap.
+- State changes run one at a time under `.team/.commitments.lock`. A lock left by a killed
+  process makes the next change wait about 10 seconds and refuse; remove it only if nothing is
+  running.
+- A running standing row (`standing: active`) holds a place under the cap until
+  `scripts/commitments release <id>`; a manager that forgets to release it loses that place.
+- Every agent's role is read from `.team/whoami` at the repo top. A session whose role does not
+  resolve is denied the Agent tool while the checks are on.

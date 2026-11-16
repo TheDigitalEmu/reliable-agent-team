@@ -15,8 +15,9 @@
 #                     | id | commitment | status | finished | stamp |
 #                   status: open | active | blocked: <reason> | done | standing
 #                   standing: an obligation the project's own rules require every week
-#                   (never done). It may be dispatched in any order, but only while the
-#                   active rows are under the cap; it never counts as promised or finished.
+#                   (never done). It may be dispatched in any order, but only under the
+#                   cap; while it runs it is "standing: active" and counts toward the cap
+#                   until `commitments release`. It never counts as promised or finished.
 #                   finished and stamp are written by `commitments done`, never by hand.
 #                   The id should match the task id on the board (.team/TASKS.md), so
 #                   done-check can resolve it.
@@ -36,10 +37,11 @@
 #                                      active row is allowed. On pass, marks <id> active.
 #                                      Also run by enforcement/hooks/dispatch-agent for
 #                                      every Agent / start-session call a manager makes.
+#   commitments release <id>          a running standing row goes back to standing.
 #   commitments block <id> <reason>    mark a row blocked, so the next open row becomes
 #                                      the top. The reason is required.
-#   commitments done <id> [args...]    runs scripts/done-check --task <id> [args...]. Only
-#                                      on exit 0 does it mark the row done and write the
+#   commitments done <id> [--branch B] runs scripts/done-check --task <id> on an ACTIVE row,
+#                                      every other input from the board. Only on exit 0 does it mark the row done and write the
 #                                      finished date and the stamp.
 #   commitments triage <inbox-id> row=<id> | declined:<reason>
 #   commitments promise [--weeks N]    rows promised this week, computed from rows finished
@@ -62,25 +64,45 @@ set -eu
 
 PROG="$(basename "$0")"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-usage() { sed -n '2,58p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'; }
 die()  { code="$1"; shift; printf '%s: %s\n' "$PROG" "$*" >&2; exit "$code"; }
 
 if [ -z "${TEAM_DIR:-}" ]; then
 	git rev-parse --git-dir >/dev/null 2>&1 || die 2 "not inside a git repository (or set TEAM_DIR)."
-	MAIN_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
+	# substr, not $2: a repo path with a space must not cut the root (and turn every check off).
+	MAIN_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10); exit}')
 	[ -n "${MAIN_ROOT:-}" ] || MAIN_ROOT=$(git rev-parse --show-toplevel)
 	TEAM_DIR="$MAIN_ROOT/.team"
 fi
 LIST="$TEAM_DIR/COMMITMENTS.md"
 INBOX="$TEAM_DIR/INBOX.md"
 CAPFILE="$TEAM_DIR/wip-cap"
+LOCK="$TEAM_DIR/.commitments.lock"
 TODAY="${TEAM_TODAY:-$(date +%Y-%m-%d)}"
+case "$TODAY" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;; *) die 2 "TEAM_TODAY must be YYYY-MM-DD." ;; esac
 
-# One-line values only: a pipe forges a column, a newline forges a row.
+# One-line values only: a pipe forges a column, a newline forges a row, and a backslash
+# is refused too so no escape can turn into either later.
 one_line() {  # one_line <label> <value>
-	case "$2" in *'|'*) die 2 "$1 must not contain '|'." ;; esac
-	[ "$(printf '%s' "$2" | wc -l | tr -d ' ')" -eq 0 ] || die 2 "$1 must not contain a newline."
 	[ -n "$2" ] || die 2 "$1 is required."
+	case "$2" in *'|'*|*'\'*) die 2 "$1 must not contain '|' or a backslash." ;; esac
+	[ "$(printf '%s' "$2" | wc -l | tr -d ' ')" -eq 0 ] || die 2 "$1 must not contain a newline."
+}
+valid_id() {  # valid_id <label> <value>: ids are letters, digits, dot, underscore, hyphen
+	one_line "$1" "$2"
+	case "$2" in *[!A-Za-z0-9._-]*) die 2 "$1 may contain only letters, digits, dot, underscore, hyphen." ;; esac
+}
+
+# One state change at a time: read, check and write happen under this lock, so two
+# dispatches at the same moment cannot both pass the cap. mkdir is atomic everywhere.
+lock() {
+	_i=0
+	until mkdir "$LOCK" 2>/dev/null; do
+		_i=$((_i + 1))
+		[ "$_i" -lt 50 ] || die 1 "BUSY: $LOCK is held (another dispatch is running, or a stale lock: remove it only if none is)."
+		sleep 0.2
+	done
+	trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM
 }
 
 # Rows of a markdown table as "cell1|cell2|...", trimmed, header and rule rows dropped.
@@ -96,31 +118,47 @@ rows() {  # rows <file>
 		}' "$1"
 }
 
-status_of() { rows "$LIST" | awk -F '|' -v id="$1" '$1 == id { print $3; exit }'; }
+# Values reach awk through ENVIRON, never -v: -v expands escapes like \n and \174, which
+# would let a reason forge a row. Ids compare as strings ("1" is not "01").
+status_of() { rows "$LIST" | CM_ID="$1" awk -F '|' '($1 "") == ENVIRON["CM_ID"] { print $3; exit }'; }
 top_open()  { rows "$LIST" | awk -F '|' '$3 == "open" { print $1; exit }'; }
-active_n()  { rows "$LIST" | awk -F '|' '$3 == "active" { n++ } END { print n + 0 }'; }
+# Active work: active rows plus standing rows currently running.
+active_n()  { rows "$LIST" | awk -F '|' '$3 == "active" || $3 == "standing: active" { n++ } END { print n + 0 }'; }
 untriaged() { rows "$INBOX" | awk -F '|' '$3 == "untriaged" { print $1 }'; }
 
+# The cap: first non-comment line, a trailing "# note" ignored, 0 to 999. Absent: 2.
+# Anything else prints "bad" and the caller refuses (a malformed cap fails closed).
 cap() {
-	c=""
-	[ -f "$CAPFILE" ] && c=$(grep -v '^[[:space:]]*#' "$CAPFILE" | grep -v '^[[:space:]]*$' | head -n 1 | tr -d ' \r')
-	case "$c" in ''|*[!0-9]*) echo 2 ;; *) echo "$c" ;; esac
+	[ -f "$CAPFILE" ] || { echo 2; return; }
+	c=$(sed -e 's/#.*$//' "$CAPFILE" | tr -d ' \t\r' | grep -v '^$' | head -n 1)
+	case "$c" in '') echo 2 ;; *[!0-9]*) echo bad ;; ?|??|???) echo "$c" ;; *) echo bad ;; esac
+}
+cap_or_die() {
+	C=$(cap)
+	[ "$C" != bad ] || die 1 "REFUSED: $CAPFILE must hold a whole number from 0 to 999."
 }
 
 # Rewrite cells of the row whose id matches. Cells: 3 status, 4 finished, 5 stamp (in the
-# trimmed numbering rows() uses); an empty new value leaves the cell as it is.
+# trimmed numbering rows() uses); an empty new value leaves the cell as it is. A CRLF
+# file keeps its CRs.
 set_row() {  # set_row <file> <id> <status> <finished> <stamp>
 	tmp="$1.tmp.$$"
-	awk -F '|' -v OFS='|' -v id="$2" -v st="$3" -v fin="$4" -v stp="$5" '
+	# Some awks (Git Bash) drop CRs on read, so CRLF is detected here and restored after.
+	_cr=$(printf '\r')
+	_crlf=0; [ "$(tr -cd '\r' < "$1" | wc -c | tr -d ' ')" -gt 0 ] && _crlf=1
+	CM_ID="$2" CM_ST="$3" CM_FIN="$4" CM_STP="$5" awk -F '|' -v OFS='|' '
+		{ sub(/\r$/, "") }
 		/^[ \t]*\|/ {
 			c = $2; gsub(/^[ \t]+|[ \t]+$/, "", c)
-			if (c == id) {
-				if (st != "")  $4 = " " st " "
-				if (fin != "") $5 = " " fin " "
-				if (stp != "") $6 = " " stp " "
+			if (c == ENVIRON["CM_ID"]) {
+				if (ENVIRON["CM_ST"] != "")  $4 = " " ENVIRON["CM_ST"] " "
+				if (ENVIRON["CM_FIN"] != "") $5 = " " ENVIRON["CM_FIN"] " "
+				if (ENVIRON["CM_STP"] != "") $6 = " " ENVIRON["CM_STP"] " "
 			}
 		}
-		{ print }' "$1" > "$tmp" && mv "$tmp" "$1"
+		{ print }' "$1" > "$tmp" || return 1
+	if [ "$_crlf" -eq 1 ]; then sed "s/\$/$_cr/" "$tmp" > "$tmp.cr" && mv "$tmp.cr" "$tmp"; fi
+	mv "$tmp" "$1"
 }
 
 # Day number of a YYYY-MM-DD date, portable (no GNU date -d).
@@ -160,34 +198,42 @@ case "$CMD" in
 	-h|--help) usage; exit 0 ;;
 
 	dispatch)
-		ID="${1:-}"; one_line "row id" "$ID"
+		ID="${1:-}"; valid_id "row id" "$ID"
 		[ -f "$LIST" ] || { echo "commitments: no $LIST, management checks off."; exit 0; }
+		lock
 		U=$(untriaged | tr '\n' ' ')
 		[ -z "$U" ] || die 1 "REFUSED (F25): owner messages not triaged: $U. Map each to a row or decline it with a reason: $PROG triage <inbox-id> row=<id> | declined:<reason>"
 		ST=$(status_of "$ID")
 		case "$ST" in
 			"") die 1 "REFUSED (F21): '$ID' is not a row in $LIST." ;;
-			active) echo "commitments: '$ID' is already active; joining it."; exit 0 ;;
-			standing)
-				N=$(active_n); C=$(cap)
-				[ "$N" -lt "$C" ] || die 1 "REFUSED (F24): $N rows active, the cap is $C; standing work waits for room too."
-				echo "commitments: standing row '$ID' dispatched (active rows $N of $C)."; exit 0 ;;
+			active|"standing: active") echo "commitments: '$ID' is already running; joining it."; exit 0 ;;
+			standing|open) : ;;
 			done) die 1 "REFUSED (F21): '$ID' is done." ;;
 			blocked*) die 1 "REFUSED (F21): '$ID' is $ST." ;;
-			open) : ;;
-			*) die 1 "REFUSED: '$ID' has unknown status '$ST' (open, active, blocked: <reason>, done)." ;;
+			*) die 1 "REFUSED: '$ID' has unknown status '$ST' (open, active, blocked: <reason>, done, standing)." ;;
 		esac
-		TOP=$(top_open)
-		[ "$TOP" = "$ID" ] || die 1 "REFUSED (F21): '$ID' is not the top open row; the top open row is '$TOP'. Work the list in the owner's order, or block the top row with a reason."
-		N=$(active_n); C=$(cap)
-		[ "$N" -lt "$C" ] || die 1 "REFUSED (F24): $N rows active, the cap is $C ($CAPFILE). Finish or block one first."
-		set_row "$LIST" "$ID" active "" ""
-		echo "commitments: '$ID' dispatched (active $((N + 1)) of $C)."
+		if [ "$ST" = open ]; then
+			TOP=$(top_open)
+			[ "$TOP" = "$ID" ] || die 1 "REFUSED (F21): '$ID' is not the top open row; the top open row is '$TOP'. Work the list in the owner's order, or block the top row with a reason."
+		fi
+		N=$(active_n); cap_or_die
+		[ "$N" -lt "$C" ] || die 1 "REFUSED (F24): $N rows running, the cap is $C ($CAPFILE). Finish, block or release one first."
+		if [ "$ST" = open ]; then set_row "$LIST" "$ID" active "" ""; else set_row "$LIST" "$ID" "standing: active" "" ""; fi
+		echo "commitments: '$ID' dispatched (running $((N + 1)) of $C)."
+		;;
+
+	release)
+		ID="${1:-}"; valid_id "row id" "$ID"
+		lock
+		[ "$(status_of "$ID")" = "standing: active" ] || die 1 "'$ID' is not a running standing row; only a standing row is released (other rows finish with done or block)."
+		set_row "$LIST" "$ID" standing "" ""
+		echo "commitments: standing row '$ID' released."
 		;;
 
 	block)
-		ID="${1:-}"; one_line "row id" "$ID"; shift || true
+		ID="${1:-}"; valid_id "row id" "$ID"; shift
 		WHY="$*"; one_line "reason" "$WHY"
+		lock
 		ST=$(status_of "$ID")
 		case "$ST" in open|active) : ;; "") die 1 "'$ID' is not a row." ;; *) die 1 "'$ID' is $ST; only an open or active row can be blocked." ;; esac
 		set_row "$LIST" "$ID" "blocked: $WHY" "" ""
@@ -195,27 +241,41 @@ case "$CMD" in
 		;;
 
 	done)
-		ID="${1:-}"; one_line "row id" "$ID"; shift
-		[ -n "$(status_of "$ID")" ] || die 1 "'$ID' is not a row."
+		ID="${1:-}"; valid_id "row id" "$ID"; shift
+		# Only the branch may be chosen. Every other done-check input (class, gates,
+		# artifact, extra checks, ledger, board, task) comes from the board, so a row
+		# cannot be stamped on skipped or borrowed proof.
+		DC_BRANCH=""
+		while [ $# -gt 0 ]; do
+			case "$1" in
+				--branch) DC_BRANCH="${2:-}"; valid_id "branch" "$DC_BRANCH"; shift 2 ;;
+				*) die 2 "done takes only --branch <name>; '$1' is refused (class, gates, artifact and task come from the board)." ;;
+			esac
+		done
+		[ "$(status_of "$ID")" = active ] || die 1 "NOT DONE (F26): '$ID' is not active; only a dispatched row can be done."
 		set +e
-		sh "$SCRIPT_DIR/done-check" --task "$ID" "$@"
+		if [ -n "$DC_BRANCH" ]; then sh "$SCRIPT_DIR/done-check" --task "$ID" --branch "$DC_BRANCH"; else sh "$SCRIPT_DIR/done-check" --task "$ID"; fi
 		RC=$?
 		set -e
 		[ "$RC" -eq 0 ] || die 1 "NOT DONE (F26): done-check exited $RC; '$ID' stays as it was."
+		lock
+		[ "$(status_of "$ID")" = active ] || die 1 "NOT DONE: '$ID' changed while done-check ran; run done again."
 		SHA=$(git rev-parse --short=12 HEAD)
 		set_row "$LIST" "$ID" done "$TODAY" "done-check exit 0 at $SHA"
 		echo "commitments: '$ID' done (done-check exit 0 at $SHA)."
 		;;
 
 	triage)
-		MID="${1:-}"; one_line "inbox id" "$MID"; shift || true
+		MID="${1:-}"; valid_id "inbox id" "$MID"; shift
 		TO="$*"; one_line "triage" "$TO"
-		[ -n "$(rows "$INBOX" | awk -F '|' -v id="$MID" '$1 == id { print 1 }')" ] || die 1 "'$MID' is not in $INBOX."
 		case "$TO" in
-			row=*) [ -n "$(status_of "${TO#row=}")" ] || die 1 "'${TO#row=}' is not a row in $LIST; add the row first." ;;
+			row=*) valid_id "row id" "${TO#row=}" ;;
 			declined:?*) : ;;
 			*) die 2 "triage is row=<id> or declined:<reason>." ;;
 		esac
+		lock
+		[ -n "$(rows "$INBOX" | CM_ID="$MID" awk -F '|' '($1 "") == ENVIRON["CM_ID"] { print 1 }')" ] || die 1 "'$MID' is not in $INBOX."
+		case "$TO" in row=*) [ -n "$(status_of "${TO#row=}")" ] || die 1 "'${TO#row=}' is not a row in $LIST; add the row first." ;; esac
 		set_row "$INBOX" "$MID" "$TO" "" ""
 		echo "commitments: $MID triaged: $TO"
 		;;
@@ -229,6 +289,7 @@ case "$CMD" in
 
 	report)
 		DL=""; [ "${1:-}" = "--deadline" ] && DL="${2:-}"
+		case "$DL" in ""|[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;; *) die 2 "--deadline must be YYYY-MM-DD." ;; esac
 		[ -f "$LIST" ] || die 2 "no $LIST."
 		set -- $(compute_promise 3); P="$1"; PF="$2"; PW="$3"
 		printf 'COMMITMENTS REPORT %s (generated by scripts/commitments; no figure here is hand-written)\n' "$TODAY"
@@ -247,7 +308,7 @@ case "$CMD" in
 				for (i = 1; i <= n; i++) {
 					s = st[i]; if (s == "done" && stp[i] == "") s = "NOT DONE (no done-check stamp)"
 					mark = ""
-					if (s != "done" && s != "standing" && s !~ /^blocked/ && p != "-" && k < p) { mark = "  [in this week'"'"'s promise]"; k++ }
+					if (s != "done" && s !~ /^standing/ && s !~ /^blocked/ && p != "-" && k < p) { mark = "  [in this week'"'"'s promise]"; k++ }
 					printf "  %d. %s  %s%s\n", i, id[i], s, mark
 				}
 				if (bad != "") print "Done rows with no stamp, counted NOT done:" bad
@@ -255,7 +316,7 @@ case "$CMD" in
 					if (p == "-" || p == 0) { print "Deadline " dl ": no measured rate yet, so no row can be shown to fit." }
 					else {
 						left = int((days(dl) - t + 6) / 7); room = left * p; fit = ""; miss = ""
-						for (i = 1; i <= n; i++) if ((st[i] != "done" || stp[i] == "") && st[i] !~ /^blocked/ && st[i] != "standing") { if (room > 0) { fit = fit " " id[i]; room-- } else miss = miss " " id[i] }
+						for (i = 1; i <= n; i++) if ((st[i] != "done" || stp[i] == "") && st[i] !~ /^blocked/ && st[i] !~ /^standing/) { if (room > 0) { fit = fit " " id[i]; room-- } else miss = miss " " id[i] }
 						print "Deadline " dl ": " left " weeks at " p " a week."
 						print "  Fits:" (fit == "" ? " none" : fit)
 						print "  Does not fit:" (miss == "" ? " none" : miss)

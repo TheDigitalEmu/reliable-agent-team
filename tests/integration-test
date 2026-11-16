@@ -918,15 +918,21 @@ rm -f .team/COMMITMENTS.md .team/INBOX.md
 printf '{"prompt":"hello"}' | TEAM_ROLE=manager sh "$INBOX_HOOK" >/dev/null 2>&1
 if [ ! -f .team/INBOX.md ]; then ok "MG5 checks off without COMMITMENTS.md (hook no-op)"; else bad "MG5 hook wrote an inbox with the checks off"; fi
 # MG6: done only on done-check exit 0, and the stamp is the script's.
-mg_list '| A | first | active | | |' '| H | hand-marked | done | 2026-11-10 | |'
-git_quiet add -A; git_quiet commit -m "list"
-DC_ARGS="--class static --author x --no-gate --no-artifact --no-extra"
-if sh "$CM" done A $DC_ARGS >/dev/null 2>&1; then bad "MG6 done passed while the branch was unpushed"; else ok "MG6 done refuses while done-check fails"; fi
+mg_list '| A | first | active | | |' '| H | hand-marked | done | 2026-11-10 | |' '| O | open row | open | | |'
+echo work > work.txt; git_quiet add -A; git_quiet commit -m "work for A"; A_SHA=$(git rev-parse HEAD)
+# Every done-check input comes from the board: class, author, artifact, sha.
+printf 'A | class=static | author=dev | artifact=no | sha=%s\nO | class=static | author=dev | artifact=no | sha=%s\n' "$A_SHA" "$A_SHA" > .team/TASKS.md
+seed_gate "$A_SHA" static reviewer PASS reviewer; commit_ledger
+if sh "$CM" done A --branch main >/dev/null 2>&1; then bad "MG6 done passed while the branch was unpushed"; else ok "MG6 done refuses while done-check fails"; fi
 [ "$(mg_st A)" = "active" ] && ok "MG6 a failed done leaves the row as it was" || bad "MG6 a failed done changed the row"
-# Fixture only: put the commit on the remote without gate rows (the gate is not under
-# test here, and done-check runs with --no-gate), so the pushed condition holds.
+# BYPASS 4 (break-test of d67d76a): skip flags and a borrowed task id are refused, and
+# only an active row can be done.
+if sh "$CM" done A --branch main --no-gate --no-artifact --no-extra >/dev/null 2>&1; then bad "BP4 done accepted --no-gate"; else ok "BP4 done refuses done-check skip flags"; fi
+if sh "$CM" done H --task A >/dev/null 2>&1; then bad "BP4 done accepted a borrowed --task"; else ok "BP4 done refuses --task (no borrowed exit code)"; fi
+# Fixture only: put the commits on the remote; the gate rows exist, the push hook is not under test here.
 git push -q --no-verify origin HEAD:refs/heads/main >/dev/null 2>&1
-if sh "$CM" done A --branch main $DC_ARGS >/dev/null 2>&1 && grep -q '| A | first | done | .* | done-check exit 0 at ' .team/COMMITMENTS.md; then ok "MG6 done-check exit 0 marks done with a stamp"; else bad "MG6 a passing done-check did not stamp the row"; fi
+if sh "$CM" done O --branch main >/dev/null 2>&1; then bad "BP4 a never-dispatched row was stamped done"; else ok "BP4 done refuses a row that is not active"; fi
+if sh "$CM" done A --branch main >/dev/null 2>&1 && grep -q '| A | first | done | .* | done-check exit 0 at ' .team/COMMITMENTS.md; then ok "MG6 done-check exit 0 marks done with a stamp"; else bad "MG6 a passing done-check did not stamp the row"; fi
 if sh "$CM" report 2>/dev/null | grep -q 'H  NOT DONE (no done-check stamp)'; then ok "MG6 a hand-marked done row with no stamp is reported NOT DONE"; else bad "MG6 an unstamped done row was reported done"; fi
 # MG7: the promise is computed from history counted from the list's first commit.
 setup_repo mg7
@@ -968,7 +974,8 @@ mg_list '| A | first | open | | |' '| B | second | open | | |' '| W | weekly req
 if [ "$(da manager '{"tool_name":"Agent","tool_input":{"prompt":"Delegation 7\nRow: A\nbuild it"}}')" = 0 ] && [ "$(mg_st A)" = "active" ]; then ok "MGA5 Row: <top open row> is allowed and goes active"; else bad "MGA5 top row was not dispatched"; fi
 [ "$(da manager '{"tool_name":"Agent","tool_input":{"subagent_type":"reviewer","prompt":"gate sha 1234\nRow: A"}}')" = 0 ] && ok "MGA6 a gate agent naming the active row it serves is allowed" || bad "MGA6 gate agent on an active row denied"
 [ "$(da developer '{"tool_name":"Agent","tool_input":{"prompt":"no row"}}')" = 0 ] && ok "MGA7 a non-manager session is not checked" || bad "MGA7 a developer call was checked"
-[ "$(da manager '{"tool_name":"mcp__ccd_session__start_session","tool_input":{"title":"t","prompt":"Row: W\nrun the weekly check"}}')" = 0 ] && [ "$(mg_st W)" = "standing" ] && ok "MGA8 a standing row dispatches out of order and stays standing" || bad "MGA8 standing row not dispatched or its status changed"
+[ "$(da manager '{"tool_name":"mcp__ccd_session__start_session","tool_input":{"title":"t","prompt":"Row: W\nrun the weekly check"}}')" = 0 ] && [ "$(mg_st W)" = "standing: active" ] && ok "MGA8 a standing row dispatches out of order and runs as standing: active" || bad "MGA8 standing row not dispatched as standing: active"
+sh "$CM" release W >/dev/null 2>&1
 printf '1\n' > .team/wip-cap
 [ "$(da manager '{"tool_name":"Agent","tool_input":{"prompt":"Row: W"}}')" = 2 ] && ok "MGA9 a standing row is refused at the WIP cap" || bad "MGA9 standing row passed at the cap"
 rm -f .team/wip-cap
@@ -976,6 +983,68 @@ printf '{"prompt":"also do the export"}' | TEAM_ROLE=manager sh "$INBOX_HOOK" >/
 [ "$(da manager '{"tool_name":"Agent","tool_input":{"prompt":"Row: A"}}')" = 2 ] && ok "MGA10 an untriaged owner message denies even a join" || bad "MGA10 untriaged inbox did not deny"
 export COMMITMENTS=/nonexistent; MGA11=$(da manager '{"tool_name":"Agent","tool_input":{"prompt":"Row: A"}}'); unset COMMITMENTS
 [ "$MGA11" = 2 ] && ok "MGA11 a missing commitments script fails closed" || bad "MGA11 missing script allowed the call"
+
+# ---------------------------------------------------------------- BP (break-test of d67d76a)
+# BP1: a repo path with a space must not turn the checks off.
+SP="$WORK/sp ace"; mkdir -p "$SP"; cd "$SP"
+git init -q .; git_quiet config user.email t@t.t; git_quiet config user.name t; git_quiet config commit.gpgsign false
+git_quiet commit --allow-empty -m init; mkdir -p .team
+mg_list '| A | first | open | | |' '| B | second | open | | |'
+[ "$(da manager '{"tool_name":"Agent","tool_input":{"prompt":"no row"}}')" = 2 ] && ok "BP1 space in the repo path: a no-Row Agent call is still denied" || bad "BP1 space in path turned the Agent check off"
+if sh "$CM" dispatch B >/dev/null 2>&1; then bad "BP1 space in path: a non-top row was dispatched"; else ok "BP1 space in path: dispatch still refuses a non-top row"; fi
+printf '{"prompt":"space path message"}' | TEAM_ROLE=manager sh "$INBOX_HOOK" >/dev/null 2>&1
+grep -q 'space path message' .team/INBOX.md 2>/dev/null && ok "BP1 space in path: the inbox still logs" || bad "BP1 space in path: the inbox wrote nothing"
+# BP2: an unresolved role fails closed; whoami is read from the repo top, not the cwd.
+setup_repo bp2
+echo seed > seed.txt; git_quiet add seed.txt; git_quiet commit -m seed
+mg_list '| A | first | open | | |'
+unset TEAM_ROLE 2>/dev/null || true
+[ "$(da '' '{"tool_name":"Agent","tool_input":{"prompt":"Row: A"}}')" = 2 ] && ok "BP2 a legacy whoami with no role is denied (fail closed)" || bad "BP2 unresolved role was allowed"
+rm -f .team/whoami
+[ "$(da '' '{"tool_name":"Agent","tool_input":{"prompt":"Row: A"}}')" = 2 ] && ok "BP2 no whoami at all is denied" || bad "BP2 missing whoami was allowed"
+printf 'boss\nROLE=manager\n' > .team/whoami
+mkdir -p sub/dir; cd sub/dir
+[ "$(da '' '{"tool_name":"Agent","tool_input":{"prompt":"no row"}}')" = 2 ] && ok "BP2 from a subdirectory the manager is still checked (no Row denied)" || bad "BP2 subdirectory cwd skipped the check"
+cd "$REPO"; git_quiet worktree add -q -b agent-x .worktrees/agent-x; cd .worktrees/agent-x
+[ "$(da '' '{"tool_name":"Agent","tool_input":{"prompt":"no row"}}')" = 2 ] && ok "BP2 an agent worktree with no whoami acts as the main checkout's manager" || bad "BP2 agent worktree without whoami was allowed"
+cd "$REPO"
+# BP3: no forged row through block or triage text.
+setup_repo bp3
+mg_list '| A | first | open | | |'
+ROWS_BEFORE=$(grep -c '^|' .team/COMMITMENTS.md)
+if sh "$CM" block A 'x\n\174 Z \174 forged \174 done \174 2026-11-16 \174 done-check exit 0 at 1 \174' >/dev/null 2>&1; then bad "BP3 a backslash reason was accepted by block"; else ok "BP3 block refuses a reason with a backslash"; fi
+printf '| id | date | status | excerpt |\n|---|---|---|---|\n| M1 | 2026-11-16 | untriaged | x |\n' > .team/INBOX.md
+if sh "$CM" triage M1 'declined:a\n\174 Z' >/dev/null 2>&1; then bad "BP3 a backslash triage was accepted"; else ok "BP3 triage refuses a backslash"; fi
+sh "$CM" block A 'plain reason, with: punctuation' >/dev/null 2>&1
+[ "$(grep -c '^|' .team/COMMITMENTS.md)" = "$ROWS_BEFORE" ] && [ "$(mg_st A)" = "blocked: plain reason, with: punctuation" ] && ok "BP3 a plain reason is written as text and adds no row" || bad "BP3 a reason changed the row count or text"
+# BP5: the cap holds under concurrent dispatch, and a running standing row counts.
+bp5_round() {
+	mg_list '| A | first | active | | |' '| B | second | open | | |' '| W | weekly | standing | | |'
+	rm -rf .team/.commitments.lock
+	( sh "$CM" dispatch B >/dev/null 2>&1 && echo ok > .team/r1 ) &
+	( sh "$CM" dispatch W >/dev/null 2>&1 && echo ok > .team/r2 ) &
+	wait
+	n=0; [ -f .team/r1 ] && n=$((n + 1)); [ -f .team/r2 ] && n=$((n + 1)); rm -f .team/r1 .team/r2
+	echo "$n"
+}
+setup_repo bp5
+BP5_BAD=0; for _r in 1 2 3 4 5 6; do [ "$(bp5_round)" = 1 ] || BP5_BAD=$((BP5_BAD + 1)); done
+[ "$BP5_BAD" -eq 0 ] && ok "BP5 cap 2 with 1 running: of a concurrent top row and standing row exactly one passes (6 of 6)" || bad "BP5 concurrent dispatch broke the cap in $BP5_BAD of 6 rounds"
+mg_list '| W | weekly | standing: active | | |'
+sh "$CM" release W >/dev/null 2>&1 && [ "$(mg_st W)" = standing ] && ok "BP5 release returns a running standing row to standing" || bad "BP5 release did not return W to standing"
+# Minor findings.
+mg_list '| B | second | open | | |'
+printf '5 # owner ruling\n' > .team/wip-cap
+sh "$CM" report 2>/dev/null | grep -q 'cap 5)' && ok "MIN a trailing comment on the cap is ignored (reads 5)" || bad "MIN '5 # note' did not read as 5"
+printf '99999\n' > .team/wip-cap
+CAP_OUT=$(sh "$CM" dispatch B 2>&1 || true)
+printf '%s' "$CAP_OUT" | grep -q 'whole number from 0 to 999' && ! printf '%s' "$CAP_OUT" | grep -q 'integer expression' && ok "MIN a huge cap refuses with a clear message" || bad "MIN huge cap: $CAP_OUT"
+rm -f .team/wip-cap
+mg_list '| 01 | first | open | | |'
+if sh "$CM" dispatch 1 >/dev/null 2>&1; then bad "MIN id 1 matched row 01 (numeric compare)"; else ok "MIN ids compare as strings (1 is not 01)"; fi
+printf '| id | commitment | status | finished | stamp |\r\n|---|---|---|---|---|\r\n| C | crlf | open | | |\r\n' > .team/COMMITMENTS.md
+sh "$CM" dispatch C >/dev/null 2>&1
+[ "$(tr -cd '\r' < .team/COMMITMENTS.md | wc -c | tr -d ' ')" = 3 ] && [ "$(mg_st C | tr -d '\r')" = active ] && ok "MIN a CRLF list keeps its CRs when a row is rewritten" || bad "MIN CRLF lost on rewrite"
 
 # ---------------------------------------------------------------- verdict
 printf '\nintegration-test: %d passed, %d failed\n' "$PASS_N" "$FAIL_N"

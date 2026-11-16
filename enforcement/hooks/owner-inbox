@@ -12,8 +12,9 @@
 #   with a reason). The instruction can be judged wrongly, but it cannot vanish.
 #
 # WHEN IT ACTS
-#   Only when the session's role is manager AND .team/COMMITMENTS.md exists (the
-#   management checks are on). Any other session: no-op.
+#   Only when .team/COMMITMENTS.md exists (the management checks are on). Then a
+#   manager session, or one whose role does not resolve, is logged; a session with
+#   another known role is not. The role comes from .team/whoami at the repo top.
 #
 # WHAT IT STORES
 #   An excerpt: the first 120 characters, one line, pipes replaced. INBOX.md is a
@@ -36,13 +37,20 @@ RESOLVE_ROLE="${RESOLVE_ROLE:-$HERE/../lib/resolve-role}"
 PAYLOAD=$(cat 2>/dev/null || true)
 
 TOP=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-MAIN_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
+# substr, not $2: a repo path with a space must not cut the root and turn logging off.
+MAIN_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10); exit}')
 [ -n "${MAIN_ROOT:-}" ] || MAIN_ROOT="$TOP"
 TEAM_DIR="${TEAM_DIR:-$MAIN_ROOT/.team}"
 [ -f "$TEAM_DIR/COMMITMENTS.md" ] || exit 0
 
-ROLE=$(sh "$RESOLVE_ROLE" 2>/dev/null || true)
-[ "$ROLE" = "manager" ] || exit 0
+# Role from the repo top, not the cwd (same lookup as dispatch-agent). A known non-manager
+# role is skipped; an UNRESOLVED role is logged, because a lost instruction is the failure.
+WHO="$TOP/.team/whoami"
+[ -f "$WHO" ] || WHO="$MAIN_ROOT/.team/whoami"
+ROLE=$(TEAM_WHOAMI="$WHO" TEAM_ROLES="$MAIN_ROOT/.team/roles" sh "$RESOLVE_ROLE" 2>/dev/null || true)
+case "$ROLE" in
+	architect|researcher|developer|security|reviewer|qa) exit 0 ;;
+esac
 
 # First "prompt" string value; escaped newlines and tabs become spaces, pipes become /.
 EXCERPT=$(printf '%s' "$PAYLOAD" | tr '\r\n\t' '   ' \

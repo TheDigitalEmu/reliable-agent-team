@@ -147,7 +147,7 @@ fi
 
 # resolve the MAIN worktree root (where the shared ledger lives) so re-running
 # new-session from inside a worktree still updates the one shared ledger.
-MAIN_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
+MAIN_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10); exit}')
 [ -n "${MAIN_ROOT:-}" ] || MAIN_ROOT=$(git rev-parse --show-toplevel)
 
 REPO_NAME=$(basename "$MAIN_ROOT")

@@ -19,8 +19,10 @@
 #   agents name the row they serve. No Row line: denied.
 #
 # WHEN IT ACTS
-#   Role manager AND .team/COMMITMENTS.md exists in the main checkout. Otherwise
-#   it allows the call untouched.
+#   Only when .team/COMMITMENTS.md exists in the main checkout. Then: role manager
+#   is checked, any other known role is allowed, and an UNRESOLVED role is denied.
+#   The role comes from .team/whoami at the repo top (this worktree, else the main
+#   checkout), not from the cwd.
 #
 # OUTPUT CONTRACT (PreToolUse)  exit 0 allow; exit 2 deny, reason on stderr.
 #   If the commitments script cannot be found while the checks are on, it DENIES:
@@ -41,13 +43,26 @@ COMMITMENTS="${COMMITMENTS:-$HERE/../../scripts/commitments}"
 PAYLOAD=$(cat 2>/dev/null || true)
 
 git rev-parse --git-dir >/dev/null 2>&1 || exit 0
-MAIN_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
-[ -n "${MAIN_ROOT:-}" ] || MAIN_ROOT=$(git rev-parse --show-toplevel)
+TOP=$(git rev-parse --show-toplevel)
+# substr, not $2: a repo path with a space must not cut the root and turn the check off.
+MAIN_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10); exit}')
+[ -n "${MAIN_ROOT:-}" ] || MAIN_ROOT="$TOP"
 TEAM_DIR="${TEAM_DIR:-$MAIN_ROOT/.team}"
 [ -f "$TEAM_DIR/COMMITMENTS.md" ] || exit 0
 
-ROLE=$(sh "$RESOLVE_ROLE" 2>/dev/null || true)
-[ "$ROLE" = "manager" ] || exit 0
+# The role is read from the repo top, not the cwd: this worktree's whoami, else the main
+# checkout's (an agent worktree has none, so it acts as the manager that started it).
+WHO="$TOP/.team/whoami"
+[ -f "$WHO" ] || WHO="$MAIN_ROOT/.team/whoami"
+ROLE=$(TEAM_WHOAMI="$WHO" TEAM_ROLES="$MAIN_ROOT/.team/roles" sh "$RESOLVE_ROLE" 2>/dev/null || true)
+case "$ROLE" in
+	manager) : ;;
+	architect|researcher|developer|security|reviewer|qa) exit 0 ;;
+	*)	# With the checks on, an unknown role fails CLOSED: an unresolved manager is the
+		# commonest way to start work unchecked.
+		echo "DENIED (dispatch-agent): no role resolves for this session ($WHO). Add ROLE=<role> to .team/whoami, or start the session with enforcement/new-session --role." >&2
+		exit 2 ;;
+esac
 
 [ -f "$COMMITMENTS" ] || {
 	echo "DENIED (dispatch-agent): management checks are on but $COMMITMENTS is missing; cannot verify the row." >&2
