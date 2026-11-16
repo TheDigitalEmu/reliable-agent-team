@@ -105,39 +105,53 @@ who() {  # the session id in .team/whoami at the repo top, or "unknown"
 
 # One state change at a time: read, check and write happen under this lock, so two
 # dispatches at the same moment cannot both pass the cap. mkdir is atomic everywhere.
-# The lock holds "<pid> <epoch>". Nothing legitimate holds it for seconds, so a lock older
-# than LOCK_STALE seconds, or one with no valid owner line after 2 seconds, is
-# reclaimed and the reclaim logged. The whole wait stays near LOCK_WAIT seconds, well
-# the hook timeout (30 s for dispatch-agent), so a stuck lock never outlasts the hook.
+# The lock holds "<pid> <epoch>", written with noclobber so only one writer can own a
+# given lock directory. A lock is reclaimed (and the reclaim logged) ONLY when its owner
+# pid is dead, or when it has shown no owner line for 2 seconds in a row. A live holder
+# is never robbed, however long it stalls: the waiter refuses with BUSY instead. The
+# whole wait stays near LOCK_WAIT seconds, far under the hook timeout (30 s for
+# dispatch-agent), so a held lock never outlasts the hook.
 LOCK_WAIT=5
-LOCK_STALE=4
 lock() {
-	_start=$(date +%s); _end=$((_start + LOCK_WAIT))
-	until mkdir "$LOCK" 2>/dev/null; do
+	_end=$(( $(date +%s) + LOCK_WAIT )); _empty_since=""; _own=""
+	while :; do
 		_now=$(date +%s)
-		_own=$(cat "$LOCK/owner" 2>/dev/null || true)
-		_ep=${_own#* }
-		_stale=0
-		case "$_ep" in
-			# No valid owner line: a real holder writes it within milliseconds of mkdir.
-			''|*[!0-9]*) [ $((_now - _start)) -ge 2 ] && _stale=1 ;;
-			*) { [ $((_now - _ep)) -ge "$LOCK_STALE" ] || [ "$_ep" -gt $((_now + 1)) ]; } && _stale=1 ;;
-		esac
-		if [ "$_stale" -eq 1 ] && mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
-			# Took a lock someone else had just made fresh? Put it back.
-			if [ "$(cat "$LOCK.stale.$$/owner" 2>/dev/null || true)" != "$_own" ] && [ ! -e "$LOCK" ]; then
-				mv "$LOCK.stale.$$" "$LOCK" 2>/dev/null || true
-			else
-				rm -rf "$LOCK.stale.$$"
-				log_event "lock reclaimed (owner '${_own:-none}') by $(who) pid $$"
+		if mkdir "$LOCK" 2>/dev/null; then
+			_me="$$ $_now"
+			if ( set -C; printf '%s\n' "$_me" > "$LOCK/owner" ) 2>/dev/null \
+				&& [ "$(cat "$LOCK/owner" 2>/dev/null || true)" = "$_me" ]; then
+				# Release only our own lock: never remove one a reclaim handed to someone else.
+				trap '[ "$(cat "$LOCK/owner" 2>/dev/null || true)" = "$_me" ] && rm -rf "$LOCK"' EXIT INT TERM
+				return 0
 			fi
-			continue
+			# Lost it between mkdir and the owner line (a reclaim, or another writer): retry.
+		else
+			_own=$(cat "$LOCK/owner" 2>/dev/null || true)
+			_pid=${_own%% *}
+			_stale=0
+			case "$_pid" in
+				''|*[!0-9]*)
+					[ -n "$_empty_since" ] || _empty_since=$_now
+					[ $((_now - _empty_since)) -ge 2 ] && _stale=1 ;;
+				*)
+					_empty_since=""
+					kill -0 "$_pid" 2>/dev/null || _stale=1 ;;
+			esac
+			if [ "$_stale" -eq 1 ] && mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
+				if [ "$(cat "$LOCK.stale.$$/owner" 2>/dev/null || true)" != "$_own" ] && [ ! -e "$LOCK" ]; then
+					# The lock changed hands between our look and the move: put it back.
+					mv "$LOCK.stale.$$" "$LOCK" 2>/dev/null || true
+				else
+					rm -rf "$LOCK.stale.$$"
+					log_event "lock reclaimed (owner '${_own:-none}', holder gone) by $(who) pid $$"
+				fi
+				_empty_since=""
+				continue
+			fi
 		fi
-		[ "$_now" -lt "$_end" ] || die 1 "BUSY: $LOCK is held by '${_own:-none}' and is not stale yet; try again."
+		[ "$_now" -lt "$_end" ] || die 1 "BUSY: $LOCK is held by live process '${_own:-none}'; nothing was changed, try again."
 		sleep 0.2
 	done
-	printf '%s %s\n' "$$" "$(date +%s)" > "$LOCK/owner"
-	trap 'rm -rf "$LOCK"' EXIT INT TERM
 }
 
 # Rows of a markdown table as "cell1|cell2|...", trimmed, header and rule rows dropped.

@@ -1078,6 +1078,31 @@ printf 'boss\nROLE=manager\n' > .team/whoami
 sh "$CM" dispatch W >/dev/null 2>&1; sh "$CM" release W >/dev/null 2>&1
 grep -q 'standing row W released by boss' .team/commitments.log 2>/dev/null && ok "RT6 a standing release is logged with the releasing session" || bad "RT6 release not logged with who"
 
+# ---------------------------------------------------------------- LV (a live holder is never robbed)
+setup_repo lv
+mg_list '| A | first | open | | |'
+sleep 60 & LV_PID=$!
+mkdir .team/.commitments.lock; printf '%s %s\n' "$LV_PID" "$(( $(date +%s) - 120 ))" > .team/.commitments.lock/owner
+set +e; LV_OUT=$(sh "$CM" dispatch A 2>&1); LV_RC=$?; set -e
+[ "$LV_RC" -ne 0 ] && printf '%s' "$LV_OUT" | grep -q 'BUSY' && [ "$(cat .team/.commitments.lock/owner)" = "$LV_PID $(( $(date +%s) - 120 ))" -o -f .team/.commitments.lock/owner ] && [ "$(mg_st A)" = open ] && ok "LV1 a lock held by a live process is not reclaimed, even when old (BUSY, nothing changed)" || bad "LV1 live holder: rc=$LV_RC $LV_OUT"
+LV_DA=$(da manager '{"tool_name":"Agent","tool_input":{"prompt":"Row: A"}}')
+[ "$LV_DA" = 2 ] && ok "LV1 the Agent hook denies with exit 2 while the lock is held" || bad "LV1 Agent hook gave $LV_DA on a held lock"
+kill "$LV_PID" 2>/dev/null; wait "$LV_PID" 2>/dev/null || true
+if sh "$CM" dispatch A >/dev/null 2>&1 && [ "$(mg_st A)" = active ]; then ok "LV2 once the holder is dead the lock is reclaimed and the dispatch goes through"; else bad "LV2 dead holder's lock was not reclaimed"; fi
+
+# ---------------------------------------------------------------- FC (fail closed: only exit 2 blocks in the harness)
+setup_repo fc
+mg_list '| A | first | open | | |'
+printf '#!/bin/sh\nexit 7\n' > "$WORK/crash-cm"
+export COMMITMENTS="$WORK/crash-cm"; FC1=$(da manager '{"tool_name":"Agent","tool_input":{"prompt":"Row: A"}}'); unset COMMITMENTS
+[ "$FC1" = 2 ] && ok "FC1 a commitments script that crashes (exit 7) gives exit 2, not a pass-through code" || bad "FC1 crash gave exit $FC1"
+printf '#!/bin/sh\nexit 5\n' > "$WORK/crash-role"
+export RESOLVE_ROLE="$WORK/crash-role"; FC2=$(da '' '{"tool_name":"Agent","tool_input":{"prompt":"Row: A"}}'); unset RESOLVE_ROLE
+[ "$FC2" = 2 ] && ok "FC2 a crashing role resolver gives exit 2" || bad "FC2 resolver crash gave exit $FC2"
+export RESOLVE_ROLE="$WORK/no-such-file"; FC3=$(da '' '{"tool_name":"Agent","tool_input":{"prompt":"Row: A"}}'); unset RESOLVE_ROLE
+[ "$FC3" = 2 ] && ok "FC3 a missing role resolver gives exit 2" || bad "FC3 missing resolver gave exit $FC3"
+grep -q '"onFailure": "block"' "$KIT_DIR/hooks/hooks.json" && ok "FC4 the dispatch-agent plugin entry sets onFailure block" || bad "FC4 onFailure block missing from hooks.json"
+
 # ---------------------------------------------------------------- verdict
 printf '\nintegration-test: %d passed, %d failed\n' "$PASS_N" "$FAIL_N"
 [ "$FAIL_N" -eq 0 ] || exit 1
