@@ -98,7 +98,8 @@ Converting a list you already keep (one time):
    percentages; the report computes progress.
 4. Add a `standing` row for each obligation the project's own rules require every week (a weekly
    requirement check, a link re-verification), so that work has a row to name. A standing row
-   runs in any order but only under the cap, and never counts as promised or finished.
+   runs in any order but only under the cap, holds its place while it runs, goes back with
+   `scripts/commitments release <id>`, and never counts as promised or finished.
 5. Have the owner confirm the order, then commit the file. The promise history starts at that
    commit.
 
