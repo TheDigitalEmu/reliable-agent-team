@@ -12,9 +12,10 @@
 #   with a reason). The instruction can be judged wrongly, but it cannot vanish.
 #
 # WHEN IT ACTS
-#   Only when .team/COMMITMENTS.md exists (the management checks are on). Then a
-#   manager session, or one whose role does not resolve, is logged; a session with
-#   another known role is not. The role comes from .team/whoami at the repo top.
+#   Only when .team/COMMITMENTS.md exists (the management checks are on) AND the
+#   session's role resolves to manager (.team/whoami at the repo top). Other chats
+#   sharing the repo (reports, finance) are not logged, so they cannot block the
+#   manager's dispatch; an unresolved session cannot dispatch anyway (dispatch-agent).
 #
 # WHAT IT STORES
 #   An excerpt: the first 120 characters, one line, pipes replaced. INBOX.md is a
@@ -43,14 +44,11 @@ MAIN_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print 
 TEAM_DIR="${TEAM_DIR:-$MAIN_ROOT/.team}"
 [ -f "$TEAM_DIR/COMMITMENTS.md" ] || exit 0
 
-# Role from the repo top, not the cwd (same lookup as dispatch-agent). A known non-manager
-# role is skipped; an UNRESOLVED role is logged, because a lost instruction is the failure.
+# Role from the repo top, not the cwd (same lookup as dispatch-agent). Manager only.
 WHO="$TOP/.team/whoami"
 [ -f "$WHO" ] || WHO="$MAIN_ROOT/.team/whoami"
 ROLE=$(TEAM_WHOAMI="$WHO" TEAM_ROLES="$MAIN_ROOT/.team/roles" sh "$RESOLVE_ROLE" 2>/dev/null || true)
-case "$ROLE" in
-	architect|researcher|developer|security|reviewer|qa) exit 0 ;;
-esac
+[ "$ROLE" = "manager" ] || exit 0
 
 # First "prompt" string value; escaped newlines and tabs become spaces, pipes become /.
 EXCERPT=$(printf '%s' "$PAYLOAD" | tr '\r\n\t' '   ' \

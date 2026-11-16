@@ -1046,6 +1046,38 @@ printf '| id | commitment | status | finished | stamp |\r\n|---|---|---|---|---|
 sh "$CM" dispatch C >/dev/null 2>&1
 [ "$(tr -cd '\r' < .team/COMMITMENTS.md | wc -c | tr -d ' ')" = 3 ] && [ "$(mg_st C | tr -d '\r')" = active ] && ok "MIN a CRLF list keeps its CRs when a row is rewritten" || bad "MIN CRLF lost on rewrite"
 
+# ---------------------------------------------------------------- RT (retest of 0f9241c)
+setup_repo rt
+mg_list '| A | first | open | | |' '| B | second | open | | |' '| W | weekly | standing | | |'
+# RT1: a stuck lock never outlasts the 10 s hook timeout, and the reclaim is logged.
+mkdir .team/.commitments.lock
+T0=$(date +%s); set +e; sh "$CM" dispatch A >/dev/null 2>&1; RC=$?; set -e; T1=$(date +%s)
+[ "$RC" -eq 0 ] && [ $((T1 - T0)) -lt 9 ] && ok "RT1 a hand-made lock with no owner is reclaimed in $((T1 - T0))s (under the hook timeout)" || bad "RT1 empty lock: rc=$RC after $((T1 - T0))s"
+grep -q 'lock reclaimed' .team/commitments.log 2>/dev/null && ok "RT1 the reclaim is logged" || bad "RT1 reclaim not logged"
+mkdir .team/.commitments.lock; printf '99999 %s\n' "$(( $(date +%s) - 60 ))" > .team/.commitments.lock/owner
+T0=$(date +%s); set +e; sh "$CM" block B old lock test >/dev/null 2>&1; RC=$?; set -e; T1=$(date +%s)
+[ "$RC" -eq 0 ] && [ $((T1 - T0)) -lt 4 ] && ok "RT1 an old lock is reclaimed at once ($((T1 - T0))s)" || bad "RT1 old lock: rc=$RC after $((T1 - T0))s"
+[ ! -e .team/.commitments.lock ] && ok "RT1 the lock is gone after the change" || bad "RT1 lock left behind"
+# RT2: the inbox logs a manager only; an unresolved session's prompt is not logged.
+rm -f .team/INBOX.md
+printf '{"prompt":"finance chat"}' | sh "$INBOX_HOOK" >/dev/null 2>&1
+[ ! -f .team/INBOX.md ] && ok "RT2 a prompt from a session with no role is not logged" || bad "RT2 an unresolved session was logged"
+# RT3: done accepts a branch with a slash (it fails later on proof, not on the name).
+DONE_OUT=$(sh "$CM" done A --branch feature/a 2>&1 || true)
+printf '%s' "$DONE_OUT" | grep -q 'not a valid branch name' && bad "RT3 feature/a refused as a branch name" || ok "RT3 done accepts a branch name with a slash"
+printf '%s' "$(sh "$CM" done A --branch 'bad..name' 2>&1 || true)" | grep -q 'not a valid branch name' && ok "RT3 an invalid branch name is still refused" || bad "RT3 bad..name accepted"
+# RT4: "2 3" is not one integer.
+printf '2 3\n' > .team/wip-cap
+printf '%s' "$(sh "$CM" dispatch W 2>&1 || true)" | grep -q 'whole number from 0 to 999' && ok "RT4 a cap of '2 3' is refused, not read as 23" || bad "RT4 '2 3' was accepted"
+rm -f .team/wip-cap
+# RT5: reason and triage text are capped at 200 characters.
+LONG=$(printf '%0201d' 0)
+if sh "$CM" block A "$LONG" >/dev/null 2>&1; then bad "RT5 a 201-character reason was accepted"; else ok "RT5 a reason over 200 characters is refused"; fi
+# RT6: a standing row release is logged with who released it.
+printf 'boss\nROLE=manager\n' > .team/whoami
+sh "$CM" dispatch W >/dev/null 2>&1; sh "$CM" release W >/dev/null 2>&1
+grep -q 'standing row W released by boss' .team/commitments.log 2>/dev/null && ok "RT6 a standing release is logged with the releasing session" || bad "RT6 release not logged with who"
+
 # ---------------------------------------------------------------- verdict
 printf '\nintegration-test: %d passed, %d failed\n' "$PASS_N" "$FAIL_N"
 [ "$FAIL_N" -eq 0 ] || exit 1

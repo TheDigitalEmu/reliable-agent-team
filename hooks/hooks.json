@@ -29,7 +29,7 @@
           {
             "type": "command",
             "command": "sh \"${CLAUDE_PLUGIN_ROOT}/enforcement/hooks/dispatch-agent\"",
-            "timeout": 10
+            "timeout": 30
           }
         ]
       }

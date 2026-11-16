@@ -87,22 +87,57 @@ one_line() {  # one_line <label> <value>
 	[ -n "$2" ] || die 2 "$1 is required."
 	case "$2" in *'|'*|*'\'*) die 2 "$1 must not contain '|' or a backslash." ;; esac
 	[ "$(printf '%s' "$2" | wc -l | tr -d ' ')" -eq 0 ] || die 2 "$1 must not contain a newline."
+	[ "${#2}" -le 200 ] || die 2 "$1 must be 200 characters or fewer."
 }
 valid_id() {  # valid_id <label> <value>: ids are letters, digits, dot, underscore, hyphen
 	one_line "$1" "$2"
 	case "$2" in *[!A-Za-z0-9._-]*) die 2 "$1 may contain only letters, digits, dot, underscore, hyphen." ;; esac
 }
 
+# The event log: lock reclaims and standing-row releases, one line each, committed with .team.
+LOG="$TEAM_DIR/commitments.log"
+log_event() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"; }
+who() {  # the session id in .team/whoami at the repo top, or "unknown"
+	_t=$(git rev-parse --show-toplevel 2>/dev/null || true)
+	_w=$(sed -e 's/#.*$//' "$_t/.team/whoami" 2>/dev/null | grep -v -i '^[[:space:]]*role[[:space:]]*=' | tr -d ' \r' | grep -v '^$' | head -n 1)
+	printf '%s' "${_w:-unknown}" | tr -cd 'A-Za-z0-9._:-'
+}
+
 # One state change at a time: read, check and write happen under this lock, so two
 # dispatches at the same moment cannot both pass the cap. mkdir is atomic everywhere.
+# The lock holds "<pid> <epoch>". Nothing legitimate holds it for seconds, so a lock older
+# than LOCK_STALE seconds, or one with no valid owner line after 2 seconds, is
+# reclaimed and the reclaim logged. The whole wait stays near LOCK_WAIT seconds, well
+# the hook timeout (30 s for dispatch-agent), so a stuck lock never outlasts the hook.
+LOCK_WAIT=5
+LOCK_STALE=4
 lock() {
-	_i=0
+	_start=$(date +%s); _end=$((_start + LOCK_WAIT))
 	until mkdir "$LOCK" 2>/dev/null; do
-		_i=$((_i + 1))
-		[ "$_i" -lt 50 ] || die 1 "BUSY: $LOCK is held (another dispatch is running, or a stale lock: remove it only if none is)."
+		_now=$(date +%s)
+		_own=$(cat "$LOCK/owner" 2>/dev/null || true)
+		_ep=${_own#* }
+		_stale=0
+		case "$_ep" in
+			# No valid owner line: a real holder writes it within milliseconds of mkdir.
+			''|*[!0-9]*) [ $((_now - _start)) -ge 2 ] && _stale=1 ;;
+			*) { [ $((_now - _ep)) -ge "$LOCK_STALE" ] || [ "$_ep" -gt $((_now + 1)) ]; } && _stale=1 ;;
+		esac
+		if [ "$_stale" -eq 1 ] && mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
+			# Took a lock someone else had just made fresh? Put it back.
+			if [ "$(cat "$LOCK.stale.$$/owner" 2>/dev/null || true)" != "$_own" ] && [ ! -e "$LOCK" ]; then
+				mv "$LOCK.stale.$$" "$LOCK" 2>/dev/null || true
+			else
+				rm -rf "$LOCK.stale.$$"
+				log_event "lock reclaimed (owner '${_own:-none}') by $(who) pid $$"
+			fi
+			continue
+		fi
+		[ "$_now" -lt "$_end" ] || die 1 "BUSY: $LOCK is held by '${_own:-none}' and is not stale yet; try again."
 		sleep 0.2
 	done
-	trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM
+	printf '%s %s\n' "$$" "$(date +%s)" > "$LOCK/owner"
+	trap 'rm -rf "$LOCK"' EXIT INT TERM
 }
 
 # Rows of a markdown table as "cell1|cell2|...", trimmed, header and rule rows dropped.
@@ -130,7 +165,8 @@ untriaged() { rows "$INBOX" | awk -F '|' '$3 == "untriaged" { print $1 }'; }
 # Anything else prints "bad" and the caller refuses (a malformed cap fails closed).
 cap() {
 	[ -f "$CAPFILE" ] || { echo 2; return; }
-	c=$(sed -e 's/#.*$//' "$CAPFILE" | tr -d ' \t\r' | grep -v '^$' | head -n 1)
+	# Trim only the ends: "2 3" keeps its inner space and is refused, not read as 23.
+	c=$(sed -e 's/#.*$//' "$CAPFILE" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v '^$' | head -n 1)
 	case "$c" in '') echo 2 ;; *[!0-9]*) echo bad ;; ?|??|???) echo "$c" ;; *) echo bad ;; esac
 }
 cap_or_die() {
@@ -227,6 +263,7 @@ case "$CMD" in
 		lock
 		[ "$(status_of "$ID")" = "standing: active" ] || die 1 "'$ID' is not a running standing row; only a standing row is released (other rows finish with done or block)."
 		set_row "$LIST" "$ID" standing "" ""
+		log_event "standing row $ID released by $(who)"
 		echo "commitments: standing row '$ID' released."
 		;;
 
@@ -248,7 +285,10 @@ case "$CMD" in
 		DC_BRANCH=""
 		while [ $# -gt 0 ]; do
 			case "$1" in
-				--branch) DC_BRANCH="${2:-}"; valid_id "branch" "$DC_BRANCH"; shift 2 ;;
+				--branch)
+					DC_BRANCH="${2:-}"; one_line "branch" "$DC_BRANCH"
+					git check-ref-format --branch "$DC_BRANCH" >/dev/null 2>&1 || die 2 "--branch '$DC_BRANCH' is not a valid branch name."
+					shift 2 ;;
 				*) die 2 "done takes only --branch <name>; '$1' is refused (class, gates, artifact and task come from the board)." ;;
 			esac
 		done
