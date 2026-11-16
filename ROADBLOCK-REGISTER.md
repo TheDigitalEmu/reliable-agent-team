@@ -114,7 +114,7 @@ commitments. Method and limits: `templates/method.md`. All are on only when
 
 | Roadblock | Failure | Mechanism | Class | Artifact |
 |---|---|---|---|---|
-| Work picked by what is closest to landing, not by the owner's order | F21 | A producer session starts only on the top open row of the owner's list, or joins an active row; a stuck row is blocked with a reason. | BLOCK | enforcement/new-session (--row), scripts/commitments dispatch |
+| Work picked by what is closest to landing, not by the owner's order | F21 | A producer session starts only on the top open row of the owner's list, or joins an active row; a stuck row is blocked with a reason. | BLOCK | enforcement/new-session (--row), enforcement/hooks/dispatch-agent (Agent tool, every agent names a `Row:`), scripts/commitments dispatch |
 | A promise set by guess, larger than delivery | F22 | The promise is computed from rows finished in the last 3 complete weeks, counted from the commit that added the list; the manager cannot write it. | CHECK | scripts/commitments promise |
 | Progress figures guessed and given as measured | F23 | The only progress report is generated from the list: promised vs finished, the list in order, unstamped done rows counted NOT done. | CHECK | scripts/commitments report |
 | Too many slices at once; usage limits exhausted | F24 | Dispatch refuses at the WIP cap (`.team/wip-cap`, default 2), counting active rows, not agents. | BLOCK | scripts/commitments dispatch |

@@ -22,6 +22,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Agent|Task|mcp__ccd_session__start_session",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/enforcement/hooks/dispatch-agent\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [

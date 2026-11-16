@@ -16,7 +16,7 @@ anything, except a row the team cannot move without the owner's decision.
 
 | # | Rule | Enforced by | Why |
 |---|---|---|---|
-| 1 | Work the list in order. A producer session (architect, researcher, developer) starts only on the top open row, or joins a row already active. A stuck row is blocked with a reason, and the next row becomes the top. | `new-session --row` runs `commitments dispatch` (BLOCK) | F21: managers chose what was closest to landing; 20 items landed, 0 of 6 commitments finished. |
+| 1 | Work the list in order. A producer session (architect, researcher, developer) starts only on the top open row, or joins a row already active. A stuck row is blocked with a reason, and the next row becomes the top. Every agent a manager starts names its row (`Row: <id>`), no exceptions; obligations the project's rules require weekly get a `standing` row. | `new-session --row` and the Agent-tool hook `hooks/dispatch-agent` run `commitments dispatch` (BLOCK) | F21: managers chose what was closest to landing; 20 items landed, 0 of 6 commitments finished. |
 | 2 | The week's promise is computed from rows finished in the last 3 complete weeks. The manager never writes a promise. | `commitments promise` (CHECK) | F22: promises were set by guess and missed twice. |
 | 3 | Progress is reported only by the script, as rows promised vs rows finished. No hand-written percentages. | `commitments report` (CHECK) | F23: guessed figures (45, then 55 out of 100) were given as measured. |
 | 4 | At most `wip-cap` rows active at once (default 2). | `commitments dispatch` (BLOCK) | F24: up to nine agents at once; the usage limit hit three times. |

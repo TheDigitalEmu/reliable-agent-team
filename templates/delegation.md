@@ -15,8 +15,9 @@ dispatch.
 - To: <role>
 - Date: YYYY-MM-DD
 - Type: delegation
-- Row: <the id in .team/COMMITMENTS.md this serves; new-session --row refuses anything but the top
-  open row or an active one>
+- Row: <the id in .team/COMMITMENTS.md this serves. Required for EVERY agent, gate and helper
+  agents included; the Agent-tool hook and new-session --row refuse anything but the top open row,
+  an active row, or a standing row under the cap>
 
 ### Outcome
 The result to produce, stated as an outcome, not a task. Not "go build the teams section" but "the
