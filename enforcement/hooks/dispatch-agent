@@ -1,0 +1,73 @@
+#!/bin/sh
+# ============================================================================
+# dispatch-agent : PreToolUse hook on the Agent tool (and the start-session tool).
+#                  A manager may start an agent only for a row of the owner's list.
+# ----------------------------------------------------------------------------
+# ROADBLOCKS REMOVED  F21 (order), F24 (WIP cap), F25 (inbox), see method.md.
+#   enforcement/new-session holds the dispatch check for shells, but in Claude
+#   Code the manager starts workers with the Agent tool and never runs
+#   new-session (field finding, thread 0012), so the check has to sit on that
+#   tool call too.
+#
+# THE RULE (owner ruling 2026-11-16: no exceptions)
+#   Every agent a manager starts names the row it serves with a line
+#     Row: <id>
+#   in its brief (templates/delegation.md has the field). The hook runs
+#   scripts/commitments dispatch <id>: a new row must be the top open row and
+#   under the WIP cap, joining an active row is free, a standing row needs room
+#   under the cap, and every owner message must be triaged first. Gate and helper
+#   agents name the row they serve. No Row line: denied.
+#
+# WHEN IT ACTS
+#   Role manager AND .team/COMMITMENTS.md exists in the main checkout. Otherwise
+#   it allows the call untouched.
+#
+# OUTPUT CONTRACT (PreToolUse)  exit 0 allow; exit 2 deny, reason on stderr.
+#   If the commitments script cannot be found while the checks are on, it DENIES:
+#   an unverifiable dispatch is the failure this removes.
+#
+# WIRING  hooks/hooks.json, matcher "Agent|Task|mcp__ccd_session__start_session".
+# SELF-TEST
+#   printf '{"tool_name":"Agent","tool_input":{"prompt":"Row: T1\\nbuild it"}}' \
+#     | TEAM_ROLE=manager sh dispatch-agent ; echo $?
+# ============================================================================
+
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+RESOLVE_ROLE="${RESOLVE_ROLE:-$HERE/../lib/resolve-role}"
+COMMITMENTS="${COMMITMENTS:-$HERE/../../scripts/commitments}"
+
+PAYLOAD=$(cat 2>/dev/null || true)
+
+git rev-parse --git-dir >/dev/null 2>&1 || exit 0
+MAIN_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
+[ -n "${MAIN_ROOT:-}" ] || MAIN_ROOT=$(git rev-parse --show-toplevel)
+TEAM_DIR="${TEAM_DIR:-$MAIN_ROOT/.team}"
+[ -f "$TEAM_DIR/COMMITMENTS.md" ] || exit 0
+
+ROLE=$(sh "$RESOLVE_ROLE" 2>/dev/null || true)
+[ "$ROLE" = "manager" ] || exit 0
+
+[ -f "$COMMITMENTS" ] || {
+	echo "DENIED (dispatch-agent): management checks are on but $COMMITMENTS is missing; cannot verify the row." >&2
+	exit 2
+}
+
+# The first "Row: <id>" in the call's input. JSON escapes (\n, \t) become spaces first,
+# so "Row:" at the start of a brief line is found and "subRow:" is not. Ids are
+# letters, digits, . _ - only.
+ROW=$(printf '%s' "$PAYLOAD" | tr '\r\n' '  ' | sed 's/\\[nrt]/ /g' \
+	| grep -oE '(^|[^A-Za-z0-9_])Row:[[:space:]]*[A-Za-z0-9._-]+' | head -n 1 \
+	| sed 's/.*Row:[[:space:]]*//')
+
+if [ -z "$ROW" ]; then
+	echo "DENIED (dispatch-agent, F21): every agent a manager starts names its row with a line 'Row: <id>' from .team/COMMITMENTS.md. Gate and helper agents name the row they serve." >&2
+	exit 2
+fi
+
+if OUT=$(TEAM_DIR="$TEAM_DIR" sh "$COMMITMENTS" dispatch "$ROW" 2>&1); then
+	exit 0
+fi
+printf 'DENIED (dispatch-agent): %s\n' "$OUT" >&2
+exit 2

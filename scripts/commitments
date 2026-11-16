@@ -13,7 +13,10 @@
 # THE FILES (in the MAIN checkout's .team/, override with TEAM_DIR)
 #   COMMITMENTS.md  the owner's ordered list. Row order IS the priority. Columns:
 #                     | id | commitment | status | finished | stamp |
-#                   status: open | active | blocked: <reason> | done
+#                   status: open | active | blocked: <reason> | done | standing
+#                   standing: an obligation the project's own rules require every week
+#                   (never done). It may be dispatched in any order, but only while the
+#                   active rows are under the cap; it never counts as promised or finished.
 #                   finished and stamp are written by `commitments done`, never by hand.
 #                   The id should match the task id on the board (.team/TASKS.md), so
 #                   done-check can resolve it.
@@ -31,6 +34,8 @@
 #                                      when <id> is open but not the TOP open row, or when
 #                                      the active rows are at the cap. Joining an already
 #                                      active row is allowed. On pass, marks <id> active.
+#                                      Also run by enforcement/hooks/dispatch-agent for
+#                                      every Agent / start-session call a manager makes.
 #   commitments block <id> <reason>    mark a row blocked, so the next open row becomes
 #                                      the top. The reason is required.
 #   commitments done <id> [args...]    runs scripts/done-check --task <id> [args...]. Only
@@ -57,7 +62,7 @@ set -eu
 
 PROG="$(basename "$0")"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-usage() { sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,58p' "$0" | sed 's/^# \{0,1\}//'; }
 die()  { code="$1"; shift; printf '%s: %s\n' "$PROG" "$*" >&2; exit "$code"; }
 
 if [ -z "${TEAM_DIR:-}" ]; then
@@ -163,6 +168,10 @@ case "$CMD" in
 		case "$ST" in
 			"") die 1 "REFUSED (F21): '$ID' is not a row in $LIST." ;;
 			active) echo "commitments: '$ID' is already active; joining it."; exit 0 ;;
+			standing)
+				N=$(active_n); C=$(cap)
+				[ "$N" -lt "$C" ] || die 1 "REFUSED (F24): $N rows active, the cap is $C; standing work waits for room too."
+				echo "commitments: standing row '$ID' dispatched (active rows $N of $C)."; exit 0 ;;
 			done) die 1 "REFUSED (F21): '$ID' is done." ;;
 			blocked*) die 1 "REFUSED (F21): '$ID' is $ST." ;;
 			open) : ;;
@@ -238,7 +247,7 @@ case "$CMD" in
 				for (i = 1; i <= n; i++) {
 					s = st[i]; if (s == "done" && stp[i] == "") s = "NOT DONE (no done-check stamp)"
 					mark = ""
-					if (s != "done" && s !~ /^blocked/ && p != "-" && k < p) { mark = "  [in this week'"'"'s promise]"; k++ }
+					if (s != "done" && s != "standing" && s !~ /^blocked/ && p != "-" && k < p) { mark = "  [in this week'"'"'s promise]"; k++ }
 					printf "  %d. %s  %s%s\n", i, id[i], s, mark
 				}
 				if (bad != "") print "Done rows with no stamp, counted NOT done:" bad
@@ -246,7 +255,7 @@ case "$CMD" in
 					if (p == "-" || p == 0) { print "Deadline " dl ": no measured rate yet, so no row can be shown to fit." }
 					else {
 						left = int((days(dl) - t + 6) / 7); room = left * p; fit = ""; miss = ""
-						for (i = 1; i <= n; i++) if ((st[i] != "done" || stp[i] == "") && st[i] !~ /^blocked/) { if (room > 0) { fit = fit " " id[i]; room-- } else miss = miss " " id[i] }
+						for (i = 1; i <= n; i++) if ((st[i] != "done" || stp[i] == "") && st[i] !~ /^blocked/ && st[i] != "standing") { if (room > 0) { fit = fit " " id[i]; room-- } else miss = miss " " id[i] }
 						print "Deadline " dl ": " left " weeks at " p " a week."
 						print "  Fits:" (fit == "" ? " none" : fit)
 						print "  Does not fit:" (miss == "" ? " none" : miss)

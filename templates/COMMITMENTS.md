@@ -6,7 +6,8 @@ checks on (see `templates/method.md`).
 - Row ORDER is the priority. The owner orders it, once a week. The top open row is the only open
   row a producer session may start.
 - `id` matches the task id on the board (`.team/TASKS.md`) so done-check can resolve it.
-- `status`: `open` | `active` | `blocked: <reason>` | `done`. Use the script to change it
+- `status`: `open` | `active` | `blocked: <reason>` | `done` | `standing` (a weekly obligation the
+  project's own rules require; any order, only under the cap, never promised or finished). Use the script to change it
   (`dispatch`, `block`, `done`). `finished` and `stamp` are written only by `commitments done`,
   after done-check exits 0. A `done` row with no stamp is reported as NOT DONE.
 - No pipes and no line breaks inside a cell.

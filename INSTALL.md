@@ -80,6 +80,28 @@ Copy `templates/COMMITMENTS.md` to `.team/COMMITMENTS.md` and put the owner's or
 `new-session --row <id>`, owner messages to the manager are logged to `.team/INBOX.md`, and
 progress comes from `scripts/commitments report`. What each check does: `templates/method.md`.
 
+In Claude Code the manager starts workers with the Agent tool, not `new-session`, so the plugin
+also wires `enforcement/hooks/dispatch-agent` on the Agent and start-session tools: every agent a
+manager starts must carry a line `Row: <id>` in its brief, with no exceptions (gate and helper
+agents name the row they serve). Hooks reach a project through the installed plugin; if you wire
+them globally by path instead, point at a pinned copy of the kit (a tag checkout), never at a
+working clone someone is editing, or a half-built check runs in your project.
+
+Converting a list you already keep (one time):
+
+1. Give every row an id, the same id its task uses on `.team/TASKS.md`. Short and stable:
+   letters, digits, dot, underscore, hyphen.
+2. Put the rows in the owner's order, top first, one table, in `.team/COMMITMENTS.md`. Last
+   week's undone rows go in this week's order; rows already done move as `done` only if done-check
+   passes (`scripts/commitments done <id>`), otherwise as `open`.
+3. Map old statuses to `open`, `active` (work running now), or `blocked: <reason>`. No
+   percentages; the report computes progress.
+4. Add a `standing` row for each obligation the project's own rules require every week (a weekly
+   requirement check, a link re-verification), so that work has a row to name. A standing row
+   runs in any order but only under the cap, and never counts as promised or finished.
+5. Have the owner confirm the order, then commit the file. The promise history starts at that
+   commit.
+
 ## Step 2c (recommended): Put the same gate on the server
 Copy `ci/github/gate-check.yml` to `.github/workflows/`, set `GATE_BASELINE` and `KIT_REF`, and
 make your deploy job run `scripts/require-gate-run <sha>` first (`ci/github/README.md` has the

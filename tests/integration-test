@@ -953,6 +953,30 @@ if sh "$NEW_SESSION" --role reviewer rev-a review/a >/dev/null 2>&1; then ok "MG
 # MG9: reconcile runs the report on its timer.
 if sh "$KIT_DIR/scripts/reconcile" 2>&1 | grep -q 'COMMITMENTS REPORT'; then ok "MG9 reconcile prints the commitments report"; else bad "MG9 reconcile did not print the report"; fi
 
+# ---------------------------------------------------------------- MGA (Agent-tool dispatch hook)
+DA="$HOOKS_SRC/dispatch-agent"
+da() {  # da <role> <json>: run the hook, print its exit code
+	set +e; printf '%s' "$2" | TEAM_ROLE="$1" sh "$DA" >/dev/null 2>&1; r=$?; set -e; echo "$r"
+}
+setup_repo mga
+echo seed > seed.txt; git_quiet add seed.txt; git_quiet commit -m seed
+[ "$(da manager '{"tool_name":"Agent","tool_input":{"prompt":"build it"}}')" = 0 ] && ok "MGA1 checks off without COMMITMENTS.md: allowed" || bad "MGA1 hook acted with the checks off"
+mg_list '| A | first | open | | |' '| B | second | open | | |' '| W | weekly requirement check | standing | | |'
+[ "$(da manager '{"tool_name":"Agent","tool_input":{"description":"x","prompt":"build the page, no row named"}}')" = 2 ] && ok "MGA2 a manager Agent call with no Row line is denied" || bad "MGA2 no-Row call was allowed"
+[ "$(da manager '{"tool_name":"Agent","tool_input":{"prompt":"Delegation 7\nRow: B\nbuild it"}}')" = 2 ] && ok "MGA3 a Row naming a non-top open row is denied" || bad "MGA3 non-top row allowed"
+[ "$(da manager '{"tool_name":"Agent","tool_input":{"prompt":"subRow: A\nbuild it"}}')" = 2 ] && ok "MGA4 'subRow:' is not read as a Row line" || bad "MGA4 subRow: was read as a row"
+if [ "$(da manager '{"tool_name":"Agent","tool_input":{"prompt":"Delegation 7\nRow: A\nbuild it"}}')" = 0 ] && [ "$(mg_st A)" = "active" ]; then ok "MGA5 Row: <top open row> is allowed and goes active"; else bad "MGA5 top row was not dispatched"; fi
+[ "$(da manager '{"tool_name":"Agent","tool_input":{"subagent_type":"reviewer","prompt":"gate sha 1234\nRow: A"}}')" = 0 ] && ok "MGA6 a gate agent naming the active row it serves is allowed" || bad "MGA6 gate agent on an active row denied"
+[ "$(da developer '{"tool_name":"Agent","tool_input":{"prompt":"no row"}}')" = 0 ] && ok "MGA7 a non-manager session is not checked" || bad "MGA7 a developer call was checked"
+[ "$(da manager '{"tool_name":"mcp__ccd_session__start_session","tool_input":{"title":"t","prompt":"Row: W\nrun the weekly check"}}')" = 0 ] && [ "$(mg_st W)" = "standing" ] && ok "MGA8 a standing row dispatches out of order and stays standing" || bad "MGA8 standing row not dispatched or its status changed"
+printf '1\n' > .team/wip-cap
+[ "$(da manager '{"tool_name":"Agent","tool_input":{"prompt":"Row: W"}}')" = 2 ] && ok "MGA9 a standing row is refused at the WIP cap" || bad "MGA9 standing row passed at the cap"
+rm -f .team/wip-cap
+printf '{"prompt":"also do the export"}' | TEAM_ROLE=manager sh "$INBOX_HOOK" >/dev/null 2>&1
+[ "$(da manager '{"tool_name":"Agent","tool_input":{"prompt":"Row: A"}}')" = 2 ] && ok "MGA10 an untriaged owner message denies even a join" || bad "MGA10 untriaged inbox did not deny"
+export COMMITMENTS=/nonexistent; MGA11=$(da manager '{"tool_name":"Agent","tool_input":{"prompt":"Row: A"}}'); unset COMMITMENTS
+[ "$MGA11" = 2 ] && ok "MGA11 a missing commitments script fails closed" || bad "MGA11 missing script allowed the call"
+
 # ---------------------------------------------------------------- verdict
 printf '\nintegration-test: %d passed, %d failed\n' "$PASS_N" "$FAIL_N"
 [ "$FAIL_N" -eq 0 ] || exit 1
