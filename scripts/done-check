@@ -73,7 +73,14 @@
 #     path      a file that must exist, e.g. a screenshot (satisfies artifact)
 #     port      a live service must answer, "PORT" or "HOST:PORT" (satisfies artifact);
 #               proves a running service is up, the non-HTTP artifact git cannot see
-#     sha       the commit the gates are bound to (defaults to current HEAD)
+#     sha       the commit the gates are bound to
+#     shas      a comma list, for work that landed as several commits; every commit in
+#               shas= and sha= must be on origin/<branch> and pass the gates. With
+#               neither, HEAD is checked (usually a ledger commit, so name the work).
+#
+#   The row is the first whose FIRST cell is exactly the task id. Several pairs may share
+#   one cell, space-separated ("class=static status=done artifact=no"); a cell holding
+#   any bare word is prose and never sets a field.
 #
 #   Example board line (illustrative placeholder):
 #     T42-example-page | class=static | author=alice | artifact=yes | url=https://example.test/page
@@ -115,7 +122,7 @@ set -eu
 PROG="$(basename "$0")"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
-usage() { sed -n '2,109p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,118p' "$0" | sed 's/^# \{0,1\}//'; }
 die()  { code="$1"; shift; printf '%s: %s\n' "$PROG" "$*" >&2; exit "$code"; }
 
 TASK=""
@@ -165,35 +172,61 @@ DC_SELF_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 # shellcheck source=../enforcement/lib/board-cells.sh
 . "${BOARD_CELLS:-$DC_SELF_DIR/../enforcement/lib/board-cells.sh}"
 
-field_from_board() {  # field_from_board <key>
-  key="$1"
-  [ -n "$TASKS" ] && [ -f "$TASKS" ] || return 0
-  # Find the first non-comment line mentioning the task id, pull key=value.
-  grep -v '^[[:space:]]*#' "$TASKS" 2>/dev/null \
-    | grep -F "$TASK" 2>/dev/null \
-    | head -n1 \
-    | board_cells \
-    | grep -E "^${key}=" \
-    | head -n1 \
-    | sed "s/^${key}=//"
-}
-
 if [ -z "$TASKS" ] && [ -f ".team/TASKS.md" ]; then TASKS=".team/TASKS.md"; fi
+
+# The task's row: the first non-comment row whose first cell IS the task id (an exact
+# match; a substring match read another row's fields, kit 1.3.1).
+ROW=""
+if [ -n "$TASKS" ] && [ -f "$TASKS" ]; then ROW="$(board_row "$TASK" "$TASKS" || true)"; fi
+
+field_from_board() {  # field_from_board <key>
+  [ -n "$ROW" ] || return 0
+  printf '%s\n' "$ROW" \
+    | board_cells \
+    | grep -E "^$1=" \
+    | head -n1 \
+    | sed "s/^$1=//"
+}
 
 [ -n "$CLASS" ]    || CLASS="$(field_from_board class || true)"
 [ -n "$AUTHOR" ]   || AUTHOR="$(field_from_board author || true)"
 [ -n "$URL" ]      || URL="$(field_from_board url || true)"
 [ -n "$ART_PATH" ] || ART_PATH="$(field_from_board path || true)"
 [ -n "$PORT" ]     || PORT="$(field_from_board port || true)"
-[ -n "$SHA" ]      || SHA="$(field_from_board sha || true)"
 ART_FLAG="$(field_from_board artifact || true)"
+
+# The commits the gates are bound to. --sha wins; else every commit the row names in
+# shas= (a comma list, for work that landed as several commits) and sha=; else HEAD.
+# Each one must be on origin/<branch> and pass the gates (kit 1.3.1).
+SHA_NAMED=1
+if [ -z "$SHA" ]; then
+  SHA="$( { field_from_board shas; field_from_board sha; } 2>/dev/null | tr ',' ' ' | tr -s ' \t' ' ' | sed 's/^ //; s/ $//')"
+fi
+if [ -z "$SHA" ]; then SHA="$(git rev-parse HEAD 2>/dev/null)"; SHA_NAMED=0; fi
 
 # Branch defaults to current.
 [ -n "$BRANCH" ] || BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
-[ -n "$SHA" ] || SHA="$(git rev-parse HEAD 2>/dev/null)"
 
 FAILED=0
-printf 'done-check: task=%s branch=%s sha=%s\n' "$TASK" "$BRANCH" "$SHA"
+printf 'done-check: task=%s branch=%s sha=%s\n' "$TASK" "$BRANCH" "$(printf '%s' "$SHA" | tr ' ' ',')"
+
+# Resolve each named commit to its full id once. A name git cannot resolve, or one
+# starting with "-", is refused here, so nothing below sees a raw board value.
+SHAS=""
+for s in $SHA; do
+  case "$s" in
+    -*) r="" ;;
+    *)  r="$(git rev-parse --verify --quiet "$s^{commit}" 2>/dev/null || true)" ;;
+  esac
+  if [ -z "$r" ]; then
+    printf '  BLOCK GIT: sha %s is not a commit in this repository\n' "$s"
+    printf '        roadblock: the board names a commit git cannot find (F8)\n'
+    FAILED=1
+  else
+    SHAS="$SHAS $r"
+  fi
+done
+NO_SHA_HINT='        the row names no sha= or shas=, so HEAD was checked; name the work commits on the row (shas=<a>,<b>).'
 
 # ------------------------------------------------------------------ (1) GIT
 # The branch must exist on origin, and the task's SHA must be ON it (an ancestor of
@@ -205,16 +238,17 @@ if ! git rev-parse --verify --quiet "origin/$BRANCH" >/dev/null 2>&1; then
   printf '  BLOCK GIT: origin/%s does not exist (branch not pushed)\n' "$BRANCH"
   printf '        roadblock: work stays local and never pushed (F2/F8)\n'
   FAILED=1
-elif ! git cat-file -e "$SHA^{commit}" 2>/dev/null; then
-  printf '  BLOCK GIT: sha %s is not a commit in this repository\n' "$SHA"
-  printf '        roadblock: the board names a commit git cannot find (F8)\n'
-  FAILED=1
-elif git merge-base --is-ancestor "$SHA" "origin/$BRANCH" 2>/dev/null; then
-  printf '  OK    GIT: %s is on origin/%s (merged or pushed)\n' "$(printf '%.12s' "$SHA")" "$BRANCH"
 else
-  printf '  BLOCK GIT: sha %s is NOT on origin/%s (unpushed or unmerged)\n' "$(printf '%.12s' "$SHA")" "$BRANCH"
-  printf '        roadblock: unpushed reads as done (F2/F8). Push or merge before claiming done.\n'
-  FAILED=1
+  for s in $SHAS; do
+    if git merge-base --is-ancestor "$s" "origin/$BRANCH" 2>/dev/null; then
+      printf '  OK    GIT: %s is on origin/%s (merged or pushed)\n' "$(printf '%.12s' "$s")" "$BRANCH"
+    else
+      printf '  BLOCK GIT: sha %s is NOT on origin/%s (unpushed or unmerged)\n' "$(printf '%.12s' "$s")" "$BRANCH"
+      printf '        roadblock: unpushed reads as done (F2/F8). Push or merge before claiming done.\n'
+      [ "$SHA_NAMED" -eq 1 ] || printf '%s\n' "$NO_SHA_HINT"
+      FAILED=1
+    fi
+  done
 fi
 
 # ------------------------------------------------------------------ (2) GATES
@@ -225,23 +259,27 @@ if [ "$DO_GATE" -eq 1 ]; then
     FAILED=1
   elif [ "$CLASS" = "presentational" ] || [ "$CLASS" = "static" ] || [ "$CLASS" = "auth-data-input" ]; then
     GC="$SCRIPT_DIR/gate-check"
-    [ -x "$GC" ] || GC="sh $SCRIPT_DIR/gate-check"
-    set +e
-    GATE_ARGS="--sha $SHA --class $CLASS"
-    [ -n "$AUTHOR" ] && GATE_ARGS="$GATE_ARGS --author $AUTHOR"
-    [ -n "$LEDGER" ] && GATE_ARGS="$GATE_ARGS --ledger $LEDGER"
-    # shellcheck disable=SC2086
-    GC_OUT="$($GC $GATE_ARGS 2>&1)"
-    GC_RC=$?
-    set -e
-    if [ "$GC_RC" -eq 0 ]; then
-      printf '  OK    GATES: gate-check passed for class=%s\n' "$CLASS"
-    else
-      printf '  BLOCK GATES: gate-check FAILED for class=%s\n' "$CLASS"
-      printf '%s\n' "$GC_OUT" | sed 's/^/        | /'
-      printf '        roadblock: merge/done before gates pass (F2)\n'
-      FAILED=1
-    fi
+    [ -n "$SHAS" ] || { printf '  BLOCK GATES: no resolvable commit to check\n'; FAILED=1; }
+    for s in $SHAS; do
+      set +e
+      # Arguments as a list, not a word-split string: an author or ledger path with a
+      # space reaches gate-check intact.
+      set -- --sha "$s" --class "$CLASS"
+      [ -n "$AUTHOR" ] && set -- "$@" --author "$AUTHOR"
+      [ -n "$LEDGER" ] && set -- "$@" --ledger "$LEDGER"
+      if [ -x "$GC" ]; then GC_OUT="$("$GC" "$@" 2>&1)"; else GC_OUT="$(sh "$GC" "$@" 2>&1)"; fi
+      GC_RC=$?
+      set -e
+      if [ "$GC_RC" -eq 0 ]; then
+        printf '  OK    GATES: gate-check passed for %s class=%s\n' "$(printf '%.12s' "$s")" "$CLASS"
+      else
+        printf '  BLOCK GATES: gate-check FAILED for %s class=%s\n' "$(printf '%.12s' "$s")" "$CLASS"
+        printf '%s\n' "$GC_OUT" | sed 's/^/        | /'
+        printf '        roadblock: merge/done before gates pass (F2)\n'
+        [ "$SHA_NAMED" -eq 1 ] || printf '%s\n' "$NO_SHA_HINT"
+        FAILED=1
+      fi
+    done
   else
     printf '  BLOCK GATES: unknown class "%s"\n' "$CLASS"
     FAILED=1

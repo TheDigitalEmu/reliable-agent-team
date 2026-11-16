@@ -24,6 +24,9 @@
 #   INBOX.md        owner messages, appended by enforcement/hooks/owner-inbox.
 #                     | id | date | status | excerpt |
 #                   status: untriaged | row=<id> | declined: <reason>
+#                   or peer: written by another session, a subagent or the app (the
+#                   prompt opened with a harness envelope). The report lists the last
+#                   7 days of them; they never block dispatch and need no triage.
 #   wip-cap         first non-comment line: the most rows that may be active at once.
 #                   Absent: 2. The owner sets it.
 #   ABSENT COMMITMENTS.md: the management checks are off (dispatch passes). Present: on.
@@ -379,6 +382,10 @@ case "$CMD" in
 			}'
 		U=$(untriaged | tr '\n' ' ')
 		echo "Untriaged owner messages: ${U:-none}"
+		echo "Peer messages, last 7 days (listed, never block):"
+		rows "$INBOX" | awk -F '|' -v today="$TODAY" "$DAYS_AWK"'
+			$3 == "peer" && $2 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ && days($2) > days(today) - 7 { printf "  %s %s  %s\n", $1, $2, substr($4, 1, 80); n++ }
+			END { if (!n) print "  none" }'
 		echo "Active rows: $(active_n) (cap $(cap))"
 		;;
 

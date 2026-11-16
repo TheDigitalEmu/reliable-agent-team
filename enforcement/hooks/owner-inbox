@@ -58,9 +58,22 @@ EXCERPT=$(printf '%s' "$PAYLOAD" | tr '\r\n\t' '   ' \
 	| cut -c 1-120)
 [ -n "$EXCERPT" ] || exit 0
 
+# A prompt that opens with a harness envelope was written by another session, a
+# subagent or the app, not typed by the owner. It is logged as `peer`: the report lists
+# it (a peer may relay the owner's words, so it must stay visible) but it never blocks
+# dispatch (kit 1.3.1; before, every relay had to be declined by hand first).
+STATUS=untriaged
+case "$EXCERPT" in
+	"<cross-session-message"*|"<task-notification"*|"<agent-message"*|"<side-sessions-event"*|"<ci-monitor-event"*) STATUS=peer ;;
+esac
+
 INBOX="$TEAM_DIR/INBOX.md"
 [ -f "$INBOX" ] || printf '| id | date | status | excerpt |\n|---|---|---|---|\n' > "$INBOX"
 N=$(awk -F '|' '{ c = $2; gsub(/[ \t]/, "", c); if (c ~ /^M[0-9]+$/) { v = substr(c, 2) + 0; if (v > m) m = v } } END { print m + 1 }' "$INBOX")
-printf '| M%s | %s | untriaged | %s |\n' "$N" "$(date +%Y-%m-%d)" "$EXCERPT" >> "$INBOX"
-printf 'owner-inbox: logged as M%s. Triage it (scripts/commitments triage M%s row=<id> | declined:<reason>) before the next dispatch.\n' "$N" "$N"
+printf '| M%s | %s | %s | %s |\n' "$N" "$(date +%Y-%m-%d)" "$STATUS" "$EXCERPT" >> "$INBOX"
+if [ "$STATUS" = peer ]; then
+	printf 'owner-inbox: logged as M%s (peer: listed in the report, does not block dispatch).\n' "$N"
+else
+	printf 'owner-inbox: logged as M%s. Triage it (scripts/commitments triage M%s row=<id> | declined:<reason>) before the next dispatch.\n' "$N" "$N"
+fi
 exit 0

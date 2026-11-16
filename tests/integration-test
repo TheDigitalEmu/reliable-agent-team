@@ -1103,6 +1103,47 @@ export RESOLVE_ROLE="$WORK/no-such-file"; FC3=$(da '' '{"tool_name":"Agent","too
 [ "$FC3" = 2 ] && ok "FC3 a missing role resolver gives exit 2" || bad "FC3 missing resolver gave exit $FC3"
 grep -q '"onFailure": "block"' "$KIT_DIR/hooks/hooks.json" && ok "FC4 the dispatch-agent plugin entry sets onFailure block" || bad "FC4 onFailure block missing from hooks.json"
 
+# ---------------------------------------------------------------- LU (1.3.1 fixes from live use)
+. "$KIT_DIR/enforcement/lib/board-cells.sh"
+# LU1: a cell of key=value pairs splits; a prose cell that mentions a key stays whole.
+LU1=$(printf '| T | class=static status=done artifact=no | note on sha=abc1234 here |\n' | board_cells)
+printf '%s\n' "$LU1" | grep -qx 'class=static' && printf '%s\n' "$LU1" | grep -qx 'status=done' \
+	&& ok "LU1 space-separated key=value pairs in one cell read as separate fields" || bad "LU1 pairs in one cell were not split"
+printf '%s\n' "$LU1" | grep -q '^sha=' && bad "LU1 a prose cell set sha=" || ok "LU1 a prose cell that mentions sha= sets no field"
+# LU2: done-check picks the row whose first cell IS the id, and gates every shas= commit.
+setup_repo lu
+echo one > one.txt; git_quiet add one.txt; git_quiet commit -m "work 1"; LU_A=$(git rev-parse HEAD)
+echo two > two.txt; git_quiet add two.txt; git_quiet commit -m "work 2"; LU_B=$(git rev-parse HEAD)
+echo three > three.txt; git_quiet add three.txt; git_quiet commit -m "work 3, never gated"; LU_C=$(git rev-parse HEAD)
+seed_gate "$LU_A" static reviewer PASS reviewer; seed_gate "$LU_B" static reviewer PASS reviewer
+{ printf '| T5-earlier | class=presentational status=todo artifact=no | author=me | next: T5 (screens) |\n'
+  printf '| T5 | class=static status=in-progress artifact=no | author=me | shas=%s,%s |\n' "$(printf '%.7s' "$LU_A")" "$(printf '%.7s' "$LU_B")"
+  printf '| T6 | class=static status=todo artifact=no | author=me | shas=%s,%s |\n' "$LU_A" "$LU_C"
+  printf '| T7 | class=static status=todo artifact=no | author=me | no sha named |\n'
+  printf '| T8 | class=static status=todo artifact=no | author=me | shas=%s,-x |\n' "$LU_A"
+} > .team/TASKS.md
+commit_ledger
+git push -q --no-verify origin HEAD:refs/heads/main >/dev/null 2>&1
+lu_done() { sh "$DONE_CHECK" --task "$1" --branch main 2>&1; }
+LU2=$(lu_done T5) && LU2_RC=0 || LU2_RC=$?
+[ "$LU2_RC" = 0 ] && ok "LU2 the exact row is read (not the earlier row whose prose names it) and two gated commits pass" || { bad "LU2 exact row with shas= did not pass (exit $LU2_RC)"; printf '%s\n' "$LU2" | sed 's/^/        /'; }
+printf '%s\n' "$LU2" | grep -c '^  OK    GATES' | grep -qx 2 && ok "LU2 each commit in shas= is gated on its own" || bad "LU2 not every shas= commit was gated"
+# LU3: one commit in the list without gates fails the whole row.
+lu_done T6 >/dev/null && bad "LU3 a row passed with an ungated commit in shas=" || ok "LU3 one ungated commit in shas= makes the row NOT DONE"
+# LU4: no sha named means HEAD (a ledger commit) is checked, and the output says how to fix it.
+LU4=$(lu_done T7) && bad "LU4 a row with no sha passed on a ledger commit" || { printf '%s\n' "$LU4" | grep -q 'names no sha= or shas=' && ok "LU4 no sha named: NOT DONE, with the shas= hint" || bad "LU4 no hint printed"; }
+# LU5: a list entry that is not a commit, or starts with "-", is refused.
+LU5=$(lu_done T8) && bad "LU5 a row with a bad shas= entry passed" || { printf '%s\n' "$LU5" | grep -q 'sha -x is not a commit' && ok "LU5 a shas= entry starting with - is refused" || bad "LU5 bad entry not named"; }
+# LU6: a prompt opening with a harness envelope is logged as peer, never blocks, and is reported.
+mg_list '| A | first | open | | |'
+printf '{"prompt":"<cross-session-message from=\\"x\\">ship it</cross-session-message>"}' | TEAM_ROLE=manager sh "$INBOX_HOOK" >/dev/null 2>&1
+printf '{"prompt":"<task-notification> <task-id>a1</task-id>"}' | TEAM_ROLE=manager sh "$INBOX_HOOK" >/dev/null 2>&1
+[ "$(grep -c '| peer |' .team/INBOX.md 2>/dev/null)" = 2 ] && ok "LU6 peer and task envelopes are logged as peer" || bad "LU6 envelopes not logged as peer"
+sh "$CM" dispatch A >/dev/null 2>&1 && ok "LU6 peer items do not block dispatch" || bad "LU6 a peer item blocked dispatch"
+sh "$CM" report 2>/dev/null | grep -q '^  M1 ' && ok "LU6 the report lists peer items" || bad "LU6 the report does not list peer items"
+printf '{"prompt":"please do the screens next"}' | TEAM_ROLE=manager sh "$INBOX_HOOK" >/dev/null 2>&1
+grep -q '| M3 | .* | untriaged |' .team/INBOX.md && ok "LU6 an owner prompt is still untriaged" || bad "LU6 an owner prompt was not untriaged"
+
 # ---------------------------------------------------------------- verdict
 printf '\nintegration-test: %d passed, %d failed\n' "$PASS_N" "$FAIL_N"
 [ "$FAIL_N" -eq 0 ] || exit 1
