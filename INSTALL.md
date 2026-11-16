@@ -87,6 +87,14 @@ agents name the row they serve). Hooks reach a project through the installed plu
 them globally by path instead, point at a pinned copy of the kit (a tag checkout), never at a
 working clone someone is editing, or a half-built check runs in your project.
 
+Needs Claude Code 2.1.295 or later for the full guarantee. Claude Code lets a tool call through
+when a hook times out, fails to start, or exits with anything but 2. The hook itself turns every
+internal failure into a deny (exit 2), and its plugin entry sets `onFailure: "block"` so a
+timeout or a failure to start also blocks, but `onFailure` only works from 2.1.295. Below that
+version a timed-out or unstartable dispatch-agent lets the agent through. The owner-inbox hook is
+deliberately non-blocking: if it fails, the owner's message still goes through unlogged rather
+than being refused.
+
 Converting a list you already keep (one time):
 
 1. Give every row an id, the same id its task uses on `.team/TASKS.md`. Short and stable:

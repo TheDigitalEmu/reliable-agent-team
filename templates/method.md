@@ -36,7 +36,8 @@ anything, except a row the team cannot move without the owner's decision.
 - Facts from memory and relayed claims in chat: no check.
 - State changes run one at a time under `.team/.commitments.lock`. A lock left by a killed
   process is reclaimed by the next change within a few seconds, and the reclaim is written to
-  `.team/commitments.log` (so are standing-row releases, with who released them).
+  `.team/commitments.log` (so are standing-row releases, with who released them). A lock whose
+  holder is still alive is never taken: others refuse with BUSY until it finishes.
 - The role is per checkout (`.team/whoami`), not per chat. Other chats sharing the manager's
   checkout count as the manager; give them their own worktree and whoami.
 - A running standing row (`standing: active`) holds a place under the cap until

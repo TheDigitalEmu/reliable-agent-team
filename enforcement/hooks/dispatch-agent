@@ -25,16 +25,25 @@
 #   checkout), not from the cwd.
 #
 # OUTPUT CONTRACT (PreToolUse)  exit 0 allow; exit 2 deny, reason on stderr.
+#   Every other exit would let the call through, so a trap maps any failure to 2.
 #   If the commitments script cannot be found while the checks are on, it DENIES:
 #   an unverifiable dispatch is the failure this removes.
 #
-# WIRING  hooks/hooks.json, matcher "Agent|Task|mcp__ccd_session__start_session".
+# WIRING  hooks/hooks.json, matcher "Agent|Task|mcp__ccd_session__start_session",
+#   timeout 30, onFailure "block". A timed-out or unstartable hook blocks the call only
+#   on Claude Code 2.1.295 or later (onFailure); below that, the harness lets it through.
 # SELF-TEST
 #   printf '{"tool_name":"Agent","tool_input":{"prompt":"Row: T1\\nbuild it"}}' \
 #     | TEAM_ROLE=manager sh dispatch-agent ; echo $?
 # ============================================================================
 
 set -u
+
+# The harness lets a tool call through on ANY exit other than 2 (a "non-blocking
+# error"), so every way out of this hook except a deliberate allow must be 2: a crash,
+# a bad awk, an unexpected status. Allows are `exit 0`; this trap turns anything else
+# into a deny.
+trap '_rc=$?; [ "$_rc" -eq 0 ] || exit 2' EXIT
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RESOLVE_ROLE="${RESOLVE_ROLE:-$HERE/../lib/resolve-role}"
@@ -43,7 +52,8 @@ COMMITMENTS="${COMMITMENTS:-$HERE/../../scripts/commitments}"
 PAYLOAD=$(cat 2>/dev/null || true)
 
 git rev-parse --git-dir >/dev/null 2>&1 || exit 0
-TOP=$(git rev-parse --show-toplevel)
+TOP=$(git rev-parse --show-toplevel 2>/dev/null || true)
+[ -n "$TOP" ] || { echo "DENIED (dispatch-agent): inside a repository but its top could not be read." >&2; exit 2; }
 # substr, not $2: a repo path with a space must not cut the root and turn the check off.
 MAIN_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10); exit}')
 [ -n "${MAIN_ROOT:-}" ] || MAIN_ROOT="$TOP"
