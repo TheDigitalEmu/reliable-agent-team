@@ -15,6 +15,8 @@ dispatch.
 - To: <role>
 - Date: YYYY-MM-DD
 - Type: delegation
+- Row: <the id in .team/COMMITMENTS.md this serves; new-session --row refuses anything but the top
+  open row or an active one>
 
 ### Outcome
 The result to produce, stated as an outcome, not a task. Not "go build the teams section" but "the
@@ -39,6 +41,8 @@ teams section renders every sourced team with photo, region, and links, from liv
   multi-paragraph sourced profiles rather than a name-and-link list; every claim carrying its source
   URL and checked-date; the hard cases covered. A thin-but-correct draft that meets a
   correctness-only bar still fails this bar.
+- Recurring defects: copy the profile's RECURRING DEFECTS list here, and say how this work avoids
+  each one that applies.
 - change_class: `auth-data-input` | `presentational` | `static` (this sets the gate set the work will
   face).
 

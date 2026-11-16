@@ -107,6 +107,12 @@ Paths the owner has ruled ungated (documentation, discussion) go in `.team/gate-
 like the ledger, so the hook and the server apply one ruling. A commit is exempt only
 when every changed path is exempt and none is kept or never; mixed commits are gated.
 
+With `.team/COMMITMENTS.md` present (1.3.0), start producer work with
+`new-session --role developer --row <top open row> ...`, mark a stuck row with
+`scripts/commitments block <id> <reason>`, triage `.team/INBOX.md` with
+`scripts/commitments triage`, close a row with `scripts/commitments done <id>`, and report only
+with `scripts/commitments report`. See `templates/method.md`.
+
 Retrofit onto an existing repository: set `TEAM_GATE_BASELINE` (and `GATE_BASELINE` in
 the workflow) to the last commit before adoption; history before it is never gated.
 

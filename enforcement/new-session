@@ -29,6 +29,9 @@
 #     branch         branch to check out in the new worktree (created if new)
 #     worktree-path  where to place the worktree (default: ../<repo>-<session>)
 #     claim-glob     initial files/globs to claim (default: "(cleared)")
+#     --row          (1.3.0) the owner's row this session serves. Required for
+#                    architect, researcher and developer once .team/COMMITMENTS.md
+#                    exists; scripts/commitments dispatch must pass (exit 3 if not).
 #
 #   Env overrides:
 #     TEAM_LEDGER    claim ledger path relative to the MAIN repo
@@ -47,7 +50,7 @@
 set -eu
 
 usage() {
-	sed -n '2,40p' "$0" | sed -e 's/^# \{0,1\}//'
+	sed -n '2,43p' "$0" | sed -e 's/^# \{0,1\}//'
 	exit "${1:-0}"
 }
 
@@ -62,11 +65,14 @@ esac
 # so the remaining positionals (session, branch, worktree-path, claim-glob) keep
 # their positions and the flag is never handed to git as a worktree path.
 ROLE="${TEAM_ROLE:-}"
+ROW=""
 _pos_reset=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--role) ROLE="${2:-}"; shift 2 ;;
 		--role=*) ROLE="${1#--role=}"; shift ;;
+		--row) ROW="${2:-}"; shift 2 ;;
+		--row=*) ROW="${1#--row=}"; shift ;;
 		*) _pos_reset="$_pos_reset '$1'"; shift ;;
 	esac
 done
@@ -157,6 +163,23 @@ LEDGER_REL="${TEAM_LEDGER:-.team/SESSIONS.md}"
 LEDGER="$MAIN_ROOT/$LEDGER_REL"
 BASE="${TEAM_BASE:-HEAD}"
 
+# --- 0. management checks (1.3.0, thread 0012) ------------------------------
+# With .team/COMMITMENTS.md present, a session that PRODUCES work must name the
+# owner's row it serves, and scripts/commitments decides whether it may start:
+# inbox triaged, top open row (or an already active one), under the WIP cap.
+# Gate and manager sessions serve existing work and need no row.
+TASK_CELL="(session start)"
+if [ -f "$MAIN_ROOT/.team/COMMITMENTS.md" ]; then
+	case "$ROLE" in
+		architect|researcher|developer)
+			[ -n "$ROW" ] || { echo "BLOCKED (new-session): --row <id> is required; name the owner's row in .team/COMMITMENTS.md this session serves." >&2; exit 3; }
+			reject_injection "row" "$ROW"
+			TEAM_DIR="$MAIN_ROOT/.team" sh "$(dirname -- "$0")/../scripts/commitments" dispatch "$ROW" || exit 3
+			TASK_CELL="row=$ROW"
+			;;
+	esac
+fi
+
 # --- 1. create (or reuse) the worktree --------------------------------------
 if git worktree list --porcelain 2>/dev/null | grep -qx "worktree $WORKTREE_PATH" \
 	|| { [ -e "$WORKTREE_PATH" ] && git -C "$WORKTREE_PATH" rev-parse --git-dir >/dev/null 2>&1; }; then
@@ -227,8 +250,8 @@ has_active=$(awk -F '|' -v s="$SESSION" '
 if [ "${has_active:-}" = "yes" ]; then
 	echo "session '$SESSION' already has an active claim row in $LEDGER (leaving it)"
 else
-	printf '| %s | %s | %s | (session start) | working | %s |\n' \
-		"$SESSION" "$WORKTREE_PATH ($BRANCH)" "$CLAIM_GLOB" "$NOW" >> "$LEDGER"
+	printf '| %s | %s | %s | %s | working | %s |\n' \
+		"$SESSION" "$WORKTREE_PATH ($BRANCH)" "$CLAIM_GLOB" "$TASK_CELL" "$NOW" >> "$LEDGER"
 	echo "appended active claim row for '$SESSION' to $LEDGER"
 fi
 

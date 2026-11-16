@@ -880,6 +880,79 @@ commit_ledger
 printf 'exempt docs/\n' > .team/gate-exempt
 if sh "$GATE_RANGE" --tip HEAD --base "$E7_BASE" >/dev/null 2>&1; then bad "E7 an uncommitted gate-exempt was honoured (must be read at the tip)"; else ok "E7 gate-exempt is read at the tip; a working-tree copy is ignored"; fi
 
+# ---------------------------------------------------------------- MG (1.3.0 management checks)
+CM="$KIT_DIR/scripts/commitments"
+INBOX_HOOK="$HOOKS_SRC/owner-inbox"
+mg_list() {  # mg_list <row lines...>: write the owner's list, header first
+	{ printf '| id | commitment | status | finished | stamp |\n|---|---|---|---|---|\n'
+	  for r in "$@"; do printf '%s\n' "$r"; done; } > .team/COMMITMENTS.md
+}
+mg_st() { awk -F '|' -v id="$1" '{ c = $2; gsub(/ /, "", c); if (c == id) { s = $4; gsub(/^ +| +$/, "", s); print s } }' .team/COMMITMENTS.md; }
+setup_repo mg
+echo seed > seed.txt; git_quiet add seed.txt; git_quiet commit -m seed
+mg_list '| A | first | open | | |' '| B | second | open | | |' '| C | third | open | | |'
+# MG1: only the top open row may start.
+if sh "$CM" dispatch B >/dev/null 2>&1; then bad "MG1 a non-top open row was dispatched"; else ok "MG1 a non-top open row is refused"; fi
+if sh "$CM" dispatch A >/dev/null 2>&1 && [ "$(mg_st A)" = "active" ]; then ok "MG1 the top open row dispatches and goes active"; else bad "MG1 the top open row did not dispatch"; fi
+if sh "$CM" dispatch A >/dev/null 2>&1; then ok "MG1 joining an active row is allowed"; else bad "MG1 joining an active row was refused"; fi
+# MG2: the WIP cap (1 here) refuses the next row.
+printf '1\n' > .team/wip-cap
+if sh "$CM" dispatch B >/dev/null 2>&1; then bad "MG2 dispatch passed at the WIP cap"; else ok "MG2 the WIP cap refuses a new row"; fi
+rm -f .team/wip-cap
+# MG3: block needs a reason; a blocked row hands the top to the next one.
+if sh "$CM" block B >/dev/null 2>&1; then bad "MG3 block without a reason was accepted"; else ok "MG3 block requires a reason"; fi
+sh "$CM" block B waiting on the owner >/dev/null 2>&1
+if sh "$CM" dispatch C >/dev/null 2>&1 && [ "$(mg_st B)" = "blocked: waiting on the owner" ]; then ok "MG3 a blocked top row lets the next open row start"; else bad "MG3 blocked row did not hand over the top"; fi
+# MG4: owner-inbox logs manager prompts only, and dispatch refuses until triaged.
+mg_list '| A | first | open | | |'
+printf '{"prompt":"fix the | login first"}' | TEAM_ROLE=developer sh "$INBOX_HOOK" >/dev/null 2>&1
+if [ ! -f .team/INBOX.md ]; then ok "MG4 a developer prompt is not logged"; else bad "MG4 a developer prompt was logged"; fi
+printf '{"prompt":"fix the | login first"}' | TEAM_ROLE=manager sh "$INBOX_HOOK" >/dev/null 2>&1
+if grep -q '| M1 | .* | untriaged | fix the / login first |' .team/INBOX.md 2>/dev/null; then ok "MG4 a manager prompt is logged untriaged, pipe neutralised"; else bad "MG4 manager prompt not logged as expected"; fi
+if sh "$CM" dispatch A >/dev/null 2>&1; then bad "MG4 dispatch passed with an untriaged owner message"; else ok "MG4 an untriaged owner message refuses dispatch"; fi
+if sh "$CM" triage M1 row=Z >/dev/null 2>&1; then bad "MG4 triage to a row that does not exist was accepted"; else ok "MG4 triage to a missing row is refused"; fi
+sh "$CM" triage M1 row=A >/dev/null 2>&1
+if sh "$CM" dispatch A >/dev/null 2>&1; then ok "MG4 after triage the dispatch passes"; else bad "MG4 dispatch still refused after triage"; fi
+# MG5: with no COMMITMENTS.md the hook is a no-op.
+rm -f .team/COMMITMENTS.md .team/INBOX.md
+printf '{"prompt":"hello"}' | TEAM_ROLE=manager sh "$INBOX_HOOK" >/dev/null 2>&1
+if [ ! -f .team/INBOX.md ]; then ok "MG5 checks off without COMMITMENTS.md (hook no-op)"; else bad "MG5 hook wrote an inbox with the checks off"; fi
+# MG6: done only on done-check exit 0, and the stamp is the script's.
+mg_list '| A | first | active | | |' '| H | hand-marked | done | 2026-11-10 | |'
+git_quiet add -A; git_quiet commit -m "list"
+DC_ARGS="--class static --author x --no-gate --no-artifact --no-extra"
+if sh "$CM" done A $DC_ARGS >/dev/null 2>&1; then bad "MG6 done passed while the branch was unpushed"; else ok "MG6 done refuses while done-check fails"; fi
+[ "$(mg_st A)" = "active" ] && ok "MG6 a failed done leaves the row as it was" || bad "MG6 a failed done changed the row"
+# Fixture only: put the commit on the remote without gate rows (the gate is not under
+# test here, and done-check runs with --no-gate), so the pushed condition holds.
+git push -q --no-verify origin HEAD:refs/heads/main >/dev/null 2>&1
+if sh "$CM" done A --branch main $DC_ARGS >/dev/null 2>&1 && grep -q '| A | first | done | .* | done-check exit 0 at ' .team/COMMITMENTS.md; then ok "MG6 done-check exit 0 marks done with a stamp"; else bad "MG6 a passing done-check did not stamp the row"; fi
+if sh "$CM" report 2>/dev/null | grep -q 'H  NOT DONE (no done-check stamp)'; then ok "MG6 a hand-marked done row with no stamp is reported NOT DONE"; else bad "MG6 an unstamped done row was reported done"; fi
+# MG7: the promise is computed from history counted from the list's first commit.
+setup_repo mg7
+mg_list '| A | a | done | 2026-10-28 | s |' '| B | b | done | 2026-11-04 | s |' '| C | c | done | 2026-11-05 | s |' '| D | d | done | 2026-11-12 | s |' '| E | e | open | | |' '| F | f | open | | |'
+git_quiet add -A; export GIT_COMMITTER_DATE="2026-10-20T12:00:00"; git_quiet commit -m "list"; unset GIT_COMMITTER_DATE
+P_OUT=$(TEAM_TODAY=2026-11-18 sh "$CM" promise 2>&1)
+if printf '%s' "$P_OUT" | grep -q 'promise: 1 rows a week (4 finished over the last 3 complete weeks)'; then ok "MG7 promise = floor(4 finished / 3 weeks) = 1"; else bad "MG7 unexpected promise: $P_OUT"; fi
+R_OUT=$(TEAM_TODAY=2026-11-18 sh "$CM" report --deadline 2026-11-30 2>&1)
+if printf '%s' "$R_OUT" | grep -q 'E  open  \[in this week' && printf '%s' "$R_OUT" | grep -q 'Fits: E F' ; then ok "MG7 report marks the promise in list order and the rows that fit the deadline"; else bad "MG7 unexpected report: $R_OUT"; fi
+setup_repo mg7b
+mg_list '| A | a | open | | |'
+git_quiet add -A; git_quiet commit -m "list"
+if TEAM_TODAY="$(date +%Y-%m-%d)" sh "$CM" promise 2>&1 | grep -q 'none yet'; then ok "MG7 no complete week of history gives no promise"; else bad "MG7 a promise was computed with no history"; fi
+# MG8: new-session requires --row for a producer, not for a gate role.
+setup_repo mg8
+echo seed > seed.txt; git_quiet add seed.txt; git_quiet commit -m seed
+mg_list '| A | first | open | | |' '| B | second | open | | |'
+set +e; sh "$NEW_SESSION" --role developer dev-x feature/x >/dev/null 2>&1; nrc=$?; set -e
+[ "$nrc" -eq 3 ] && ok "MG8 a developer session without --row is blocked (exit 3)" || bad "MG8 developer without --row rc=$nrc"
+set +e; sh "$NEW_SESSION" --role developer --row B dev-y feature/y >/dev/null 2>&1; nrc=$?; set -e
+[ "$nrc" -eq 3 ] && ok "MG8 a developer session on a non-top row is blocked" || bad "MG8 non-top row rc=$nrc"
+if sh "$NEW_SESSION" --role developer --row A dev-z feature/z >/dev/null 2>&1 && grep -q '| dev-z | .* | row=A | working |' .team/SESSIONS.md; then ok "MG8 the top row starts and the claim names row=A"; else bad "MG8 the top row did not start or the claim lacks row=A"; fi
+if sh "$NEW_SESSION" --role reviewer rev-a review/a >/dev/null 2>&1; then ok "MG8 a gate role needs no row"; else bad "MG8 a reviewer session was blocked"; fi
+# MG9: reconcile runs the report on its timer.
+if sh "$KIT_DIR/scripts/reconcile" 2>&1 | grep -q 'COMMITMENTS REPORT'; then ok "MG9 reconcile prints the commitments report"; else bad "MG9 reconcile did not print the report"; fi
+
 # ---------------------------------------------------------------- verdict
 printf '\nintegration-test: %d passed, %d failed\n' "$PASS_N" "$FAIL_N"
 [ "$FAIL_N" -eq 0 ] || exit 1

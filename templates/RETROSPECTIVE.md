@@ -25,6 +25,10 @@ makes the failure ledger greppable by SHA and task id, so "why did gate X pass a
 is answerable with a grep, without changing the file's format or the kit's code. If a SHA or task
 id does not apply to an entry, use `SHA - TASK -:` so the lead shape stays consistent and greppable.
 
+An entry that calls for a PROCESS change (a rule, a check, a template) is written as a proposal to
+the kit maintainer (an `agentic-discussion` thread), never applied by the manager to its own rules
+(rulebook section 11, F29).
+
 `scripts/self-test` checks only that this file exists; no script parses its columns. The columns
 are for the humans and agents who read it on wake.
 

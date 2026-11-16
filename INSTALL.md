@@ -74,6 +74,12 @@ under them that still ship into the product and stay gated, `never` names paths 
 whatever else matches. The file is read at the pushed tip by the hook and the server alike, so
 commit it with the ledger. Absent, only `.team`-only and tree-identical commits are exempt.
 
+## Step 2c (optional, 1.3.0): Turn on the management checks
+Copy `templates/COMMITMENTS.md` to `.team/COMMITMENTS.md` and put the owner's ordered list in it
+(optionally `templates/wip-cap` to `.team/wip-cap`). From then on producer sessions need
+`new-session --row <id>`, owner messages to the manager are logged to `.team/INBOX.md`, and
+progress comes from `scripts/commitments report`. What each check does: `templates/method.md`.
+
 ## Step 2c (recommended): Put the same gate on the server
 Copy `ci/github/gate-check.yml` to `.github/workflows/`, set `GATE_BASELINE` and `KIT_REF`, and
 make your deploy job run `scripts/require-gate-run <sha>` first (`ci/github/README.md` has the

@@ -11,3 +11,5 @@ tests/* text eol=lf
 *.md text eol=lf
 *.json text eol=lf
 VERSION text eol=lf
+templates/gate-exempt text eol=lf
+templates/wip-cap text eol=lf
