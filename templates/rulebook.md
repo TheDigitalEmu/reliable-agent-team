@@ -131,3 +131,14 @@ Every hand-off carries a `change_class` field. It decides the gate set:
   unrelated information.
 - When the owner asks the manager to start the next part of the project and the level is L3, the
   manager PROACTIVELY offers uMode for that stretch using that standard.
+
+## 11. Planning and delivery (the management method)
+- With `.team/COMMITMENTS.md` present, the checks in `templates/method.md` are on. Work the owner's
+  list in order; producer work begins only with `new-session --row <top open row>`.
+- Report progress only with `scripts/commitments report`. Never hand-write a promise, a percentage
+  or a "done": the promise is computed, and done is `scripts/commitments done` after done-check
+  exits 0.
+- Triage every owner message in `.team/INBOX.md` (a row, or declined with a reason) before the next
+  dispatch.
+- Never edit your own rules. A process change found in a retrospective goes to the kit maintainer
+  as a proposal.

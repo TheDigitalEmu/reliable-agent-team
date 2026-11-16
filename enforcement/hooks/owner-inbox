@@ -1,0 +1,60 @@
+#!/bin/sh
+# ============================================================================
+# owner-inbox : UserPromptSubmit hook. Every owner message to the manager becomes
+#               an inbox row that must be triaged before the next dispatch.
+# ----------------------------------------------------------------------------
+# ROADBLOCK REMOVED
+#   F25 (management): "An owner instruction never becomes a row, so no check sees it."
+#   On one real project 8 owner instructions were given and none was done in the
+#   time the owner set. This hook writes each manager-session prompt to
+#   .team/INBOX.md as `untriaged`; scripts/commitments dispatch refuses to start
+#   producer work while any row is still untriaged (map it to a row, or decline it
+#   with a reason). The instruction can be judged wrongly, but it cannot vanish.
+#
+# WHEN IT ACTS
+#   Only when the session's role is manager AND .team/COMMITMENTS.md exists (the
+#   management checks are on). Any other session: no-op.
+#
+# WHAT IT STORES
+#   An excerpt: the first 120 characters, one line, pipes replaced. INBOX.md is a
+#   .team file and gets committed with the ledgers, so treat what the owner types to
+#   the manager as visible to anyone who can read the repo.
+#
+# NEVER BLOCKS
+#   It always exits 0. Refusing the owner's own prompt would be worse than a missed
+#   row, and the dispatch check is where the enforcement lives.
+#
+# WIRING  hooks/hooks.json (UserPromptSubmit). Self-test:
+#   printf '{"prompt":"ship the login fix first"}' | TEAM_ROLE=manager sh owner-inbox
+# ============================================================================
+
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+RESOLVE_ROLE="${RESOLVE_ROLE:-$HERE/../lib/resolve-role}"
+
+PAYLOAD=$(cat 2>/dev/null || true)
+
+TOP=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+MAIN_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
+[ -n "${MAIN_ROOT:-}" ] || MAIN_ROOT="$TOP"
+TEAM_DIR="${TEAM_DIR:-$MAIN_ROOT/.team}"
+[ -f "$TEAM_DIR/COMMITMENTS.md" ] || exit 0
+
+ROLE=$(sh "$RESOLVE_ROLE" 2>/dev/null || true)
+[ "$ROLE" = "manager" ] || exit 0
+
+# First "prompt" string value; escaped newlines and tabs become spaces, pipes become /.
+EXCERPT=$(printf '%s' "$PAYLOAD" | tr '\r\n\t' '   ' \
+	| sed -n 's/.*"prompt"[[:space:]]*:[[:space:]]*"//p' \
+	| sed "s/\\\\\\\\/\\\\/g; s/\\\\\"/'/g; s/\".*//" \
+	| sed 's/\\[nrt]/ /g; s/|/\//g; s/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//' \
+	| cut -c 1-120)
+[ -n "$EXCERPT" ] || exit 0
+
+INBOX="$TEAM_DIR/INBOX.md"
+[ -f "$INBOX" ] || printf '| id | date | status | excerpt |\n|---|---|---|---|\n' > "$INBOX"
+N=$(awk -F '|' '{ c = $2; gsub(/[ \t]/, "", c); if (c ~ /^M[0-9]+$/) { v = substr(c, 2) + 0; if (v > m) m = v } } END { print m + 1 }' "$INBOX")
+printf '| M%s | %s | untriaged | %s |\n' "$N" "$(date +%Y-%m-%d)" "$EXCERPT" >> "$INBOX"
+printf 'owner-inbox: logged as M%s. Triage it (scripts/commitments triage M%s row=<id> | declined:<reason>) before the next dispatch.\n' "$N" "$N"
+exit 0

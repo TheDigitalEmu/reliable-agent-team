@@ -26,6 +26,13 @@ See `profiles/gelball.md` for a worked, filled example.
 - <any security invariant, e.g. no privileged key in the client bundle; data-access rules not weakened>
 - <committed AND pushed AND (for gated classes) all required gates PASSED, verified live>
 
+## RECURRING DEFECTS
+<defects this project has shipped or failed a gate on more than once. Every delegation brief
+carries this list (templates/delegation.md). A defect that fails a gate twice also gets a test,
+so the gate catches it mechanically after that (templates/method.md rule 7). e.g.:>
+- <the server rejects X unless Y: check the brief against the server's real behaviour>
+- <the same validation is missing on both the create and the edit path>
+
 ## PROJECT GATE COMMANDS
 <the exact shell commands that become `.team/done-extra` lines, one per line. Each must exit 0 for
 done-check to reach DONE. Keep these LOCAL, READ-ONLY, INSPECTION-ONLY: no network egress, no writes

@@ -1,0 +1,8 @@
+# WIP-CAP: the most commitment rows that may be active at once (copy to .team/wip-cap)
+#
+# Read by scripts/commitments dispatch. The first non-comment line is a whole number.
+# Absent or unreadable: 2. The owner sets it; size it to the usage window the team
+# really has, not to the number of agents that could be started.
+#
+# Decision: <D-nn, date, who ruled>
+2

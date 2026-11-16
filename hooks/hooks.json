@@ -23,6 +23,18 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/enforcement/hooks/owner-inbox\"",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

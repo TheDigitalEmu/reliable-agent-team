@@ -105,6 +105,27 @@ and the security conditions C1 to C6 recorded with this kit's distribution desig
 
 ---
 
+## Management roadblocks (planning and delivery, 1.3.0)
+
+From one real project's two managers over two days (thread agentic-discussion/0012): 20 items
+landed while 0 of 6 committed rows finished. The kit measured landing and nothing measured
+commitments. Method and limits: `templates/method.md`. All are on only when
+`.team/COMMITMENTS.md` exists.
+
+| Roadblock | Failure | Mechanism | Class | Artifact |
+|---|---|---|---|---|
+| Work picked by what is closest to landing, not by the owner's order | F21 | A producer session starts only on the top open row of the owner's list, or joins an active row; a stuck row is blocked with a reason. | BLOCK | enforcement/new-session (--row), scripts/commitments dispatch |
+| A promise set by guess, larger than delivery | F22 | The promise is computed from rows finished in the last 3 complete weeks, counted from the commit that added the list; the manager cannot write it. | CHECK | scripts/commitments promise |
+| Progress figures guessed and given as measured | F23 | The only progress report is generated from the list: promised vs finished, the list in order, unstamped done rows counted NOT done. | CHECK | scripts/commitments report |
+| Too many slices at once; usage limits exhausted | F24 | Dispatch refuses at the WIP cap (`.team/wip-cap`, default 2), counting active rows, not agents. | BLOCK | scripts/commitments dispatch |
+| An owner instruction never becomes a row | F25 | A UserPromptSubmit hook logs every manager-session prompt to `.team/INBOX.md`; dispatch refuses while any is untriaged. | BLOCK | enforcement/hooks/owner-inbox, scripts/commitments dispatch |
+| "Done" asserted without proof | F26 | A row is marked done only by `commitments done`, which runs done-check and stamps the exit and sha. | CHECK | scripts/commitments done |
+| The same defect shipped twice from briefs not checked against the server | F27 | The profile's RECURRING DEFECTS list goes into every brief; a defect that fails a gate twice gets a test. | PROCEDURE | profiles/example.md, templates/delegation.md |
+| A daily check the manager must remember does not happen | F28 | The commitment report runs on the reconcile timer. | CHECK | scripts/reconcile |
+| A managed agent rewrites its own process | F29 | Retrospective process changes go to the kit maintainer as a proposal. | PROCEDURE | templates/rulebook.md s11, templates/RETROSPECTIVE.md |
+
+---
+
 ## Limits (stated plainly, this is n equals 1)
 This register hardens against the failures THIS project hit. It is blind to failure modes the project
 never encountered, and a future team will hit some of those. Known gaps this kit does NOT yet remove,

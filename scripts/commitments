@@ -1,0 +1,262 @@
+#!/bin/sh
+# ============================================================================
+# commitments : the owner's ordered list, enforced at dispatch, measured by script.
+# ----------------------------------------------------------------------------
+# ROADBLOCKS REMOVED (ROADBLOCK-REGISTER.md, "Management roadblocks", thread 0012)
+#   F21 work picked by what is closest to landing, not by the owner's order.
+#   F22 a promise bigger than delivery, set by the manager's guess.
+#   F23 progress figures guessed and reported as measured.
+#   F24 too many slices at once (agents and usage limits exhausted).
+#   F25 an owner instruction that never becomes a row, so no check can see it.
+#   F26 "done" asserted without the done-check that proves it.
+#
+# THE FILES (in the MAIN checkout's .team/, override with TEAM_DIR)
+#   COMMITMENTS.md  the owner's ordered list. Row order IS the priority. Columns:
+#                     | id | commitment | status | finished | stamp |
+#                   status: open | active | blocked: <reason> | done
+#                   finished and stamp are written by `commitments done`, never by hand.
+#                   The id should match the task id on the board (.team/TASKS.md), so
+#                   done-check can resolve it.
+#   INBOX.md        owner messages, appended by enforcement/hooks/owner-inbox.
+#                     | id | date | status | excerpt |
+#                   status: untriaged | row=<id> | declined: <reason>
+#   wip-cap         first non-comment line: the most rows that may be active at once.
+#                   Absent: 2. The owner sets it.
+#   ABSENT COMMITMENTS.md: the management checks are off (dispatch passes). Present: on.
+#
+# USAGE
+#   commitments dispatch <id>          the check new-session runs before a producer
+#                                      session starts. Refuses (exit 1) while any inbox
+#                                      item is untriaged, when <id> is done or blocked,
+#                                      when <id> is open but not the TOP open row, or when
+#                                      the active rows are at the cap. Joining an already
+#                                      active row is allowed. On pass, marks <id> active.
+#   commitments block <id> <reason>    mark a row blocked, so the next open row becomes
+#                                      the top. The reason is required.
+#   commitments done <id> [args...]    runs scripts/done-check --task <id> [args...]. Only
+#                                      on exit 0 does it mark the row done and write the
+#                                      finished date and the stamp.
+#   commitments triage <inbox-id> row=<id> | declined:<reason>
+#   commitments promise [--weeks N]    rows promised this week, computed from rows finished
+#                                      in the last N complete weeks (default 3). The
+#                                      manager cannot set it.
+#   commitments report [--deadline YYYY-MM-DD]
+#                                      the only progress report: promised vs finished,
+#                                      the list in order, untriaged inbox items, done rows
+#                                      with no stamp (counted NOT done), and with a deadline
+#                                      which open rows fit at the measured rate.
+#
+# EXIT CODES  0 ok / passed.  1 refused (the reason is printed).  2 usage or setup error.
+#
+# HISTORY START: the weeks counted for the promise start at the commit that first added
+# COMMITMENTS.md (git log), so an empty early week is a real zero, not a guess.
+# TEAM_TODAY=YYYY-MM-DD overrides today's date (for tests).
+# ============================================================================
+
+set -eu
+
+PROG="$(basename "$0")"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+usage() { sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'; }
+die()  { code="$1"; shift; printf '%s: %s\n' "$PROG" "$*" >&2; exit "$code"; }
+
+if [ -z "${TEAM_DIR:-}" ]; then
+	git rev-parse --git-dir >/dev/null 2>&1 || die 2 "not inside a git repository (or set TEAM_DIR)."
+	MAIN_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
+	[ -n "${MAIN_ROOT:-}" ] || MAIN_ROOT=$(git rev-parse --show-toplevel)
+	TEAM_DIR="$MAIN_ROOT/.team"
+fi
+LIST="$TEAM_DIR/COMMITMENTS.md"
+INBOX="$TEAM_DIR/INBOX.md"
+CAPFILE="$TEAM_DIR/wip-cap"
+TODAY="${TEAM_TODAY:-$(date +%Y-%m-%d)}"
+
+# One-line values only: a pipe forges a column, a newline forges a row.
+one_line() {  # one_line <label> <value>
+	case "$2" in *'|'*) die 2 "$1 must not contain '|'." ;; esac
+	[ "$(printf '%s' "$2" | wc -l | tr -d ' ')" -eq 0 ] || die 2 "$1 must not contain a newline."
+	[ -n "$2" ] || die 2 "$1 is required."
+}
+
+# Rows of a markdown table as "cell1|cell2|...", trimmed, header and rule rows dropped.
+rows() {  # rows <file>
+	[ -f "$1" ] || return 0
+	awk -F '|' '
+		/^[ \t]*\|/ {
+			out = ""
+			for (i = 2; i < NF; i++) { c = $i; gsub(/^[ \t]+|[ \t]+$/, "", c); out = out (i > 2 ? "|" : "") c }
+			split(out, f, "|")
+			if (f[1] == "id" || f[1] ~ /^-+$/ || f[1] == "") next
+			print out
+		}' "$1"
+}
+
+status_of() { rows "$LIST" | awk -F '|' -v id="$1" '$1 == id { print $3; exit }'; }
+top_open()  { rows "$LIST" | awk -F '|' '$3 == "open" { print $1; exit }'; }
+active_n()  { rows "$LIST" | awk -F '|' '$3 == "active" { n++ } END { print n + 0 }'; }
+untriaged() { rows "$INBOX" | awk -F '|' '$3 == "untriaged" { print $1 }'; }
+
+cap() {
+	c=""
+	[ -f "$CAPFILE" ] && c=$(grep -v '^[[:space:]]*#' "$CAPFILE" | grep -v '^[[:space:]]*$' | head -n 1 | tr -d ' \r')
+	case "$c" in ''|*[!0-9]*) echo 2 ;; *) echo "$c" ;; esac
+}
+
+# Rewrite cells of the row whose id matches. Cells: 3 status, 4 finished, 5 stamp (in the
+# trimmed numbering rows() uses); an empty new value leaves the cell as it is.
+set_row() {  # set_row <file> <id> <status> <finished> <stamp>
+	tmp="$1.tmp.$$"
+	awk -F '|' -v OFS='|' -v id="$2" -v st="$3" -v fin="$4" -v stp="$5" '
+		/^[ \t]*\|/ {
+			c = $2; gsub(/^[ \t]+|[ \t]+$/, "", c)
+			if (c == id) {
+				if (st != "")  $4 = " " st " "
+				if (fin != "") $5 = " " fin " "
+				if (stp != "") $6 = " " stp " "
+			}
+		}
+		{ print }' "$1" > "$tmp" && mv "$tmp" "$1"
+}
+
+# Day number of a YYYY-MM-DD date, portable (no GNU date -d).
+DAYS_AWK='function days(s,  y, m, d, era, yoe, doy, doe) {
+	y = substr(s, 1, 4) + 0; m = substr(s, 6, 2) + 0; d = substr(s, 9, 2) + 0
+	if (m <= 2) y--
+	era = int(y / 400); yoe = y - era * 400
+	doy = int((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + d - 1
+	doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
+	return era * 146097 + doe - 719468
+}'
+
+# The date COMMITMENTS.md was first committed, or empty.
+started() {
+	git -C "$TEAM_DIR" log --diff-filter=A --format=%cs -- COMMITMENTS.md 2>/dev/null | tail -n 1
+}
+
+# Prints "promise finished weeks" (promise is "-" with no history).
+compute_promise() {  # compute_promise <weeks>
+	rows "$LIST" | awk -F '|' -v today="$TODAY" -v start="$(started)" -v n="$1" "$DAYS_AWK"'
+		BEGIN { t = days(today); ws = t - (t + 3) % 7 }
+		$3 == "done" && $5 != "" && $4 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ {
+			d = days($4); if (d >= ws - 7 * n && d < ws) f++
+		}
+		END {
+			w = 0
+			if (start != "") { s = days(start); sw = s - (s + 3) % 7; w = int((ws - sw) / 7); if (w > n) w = n }
+			if (w <= 0) { print "- " f + 0 " 0"; exit }
+			print int(f / w) " " f + 0 " " w
+		}'
+}
+
+[ -n "${1:-}" ] || { usage; exit 2; }
+CMD="$1"; shift
+
+case "$CMD" in
+	-h|--help) usage; exit 0 ;;
+
+	dispatch)
+		ID="${1:-}"; one_line "row id" "$ID"
+		[ -f "$LIST" ] || { echo "commitments: no $LIST, management checks off."; exit 0; }
+		U=$(untriaged | tr '\n' ' ')
+		[ -z "$U" ] || die 1 "REFUSED (F25): owner messages not triaged: $U. Map each to a row or decline it with a reason: $PROG triage <inbox-id> row=<id> | declined:<reason>"
+		ST=$(status_of "$ID")
+		case "$ST" in
+			"") die 1 "REFUSED (F21): '$ID' is not a row in $LIST." ;;
+			active) echo "commitments: '$ID' is already active; joining it."; exit 0 ;;
+			done) die 1 "REFUSED (F21): '$ID' is done." ;;
+			blocked*) die 1 "REFUSED (F21): '$ID' is $ST." ;;
+			open) : ;;
+			*) die 1 "REFUSED: '$ID' has unknown status '$ST' (open, active, blocked: <reason>, done)." ;;
+		esac
+		TOP=$(top_open)
+		[ "$TOP" = "$ID" ] || die 1 "REFUSED (F21): '$ID' is not the top open row; the top open row is '$TOP'. Work the list in the owner's order, or block the top row with a reason."
+		N=$(active_n); C=$(cap)
+		[ "$N" -lt "$C" ] || die 1 "REFUSED (F24): $N rows active, the cap is $C ($CAPFILE). Finish or block one first."
+		set_row "$LIST" "$ID" active "" ""
+		echo "commitments: '$ID' dispatched (active $((N + 1)) of $C)."
+		;;
+
+	block)
+		ID="${1:-}"; one_line "row id" "$ID"; shift || true
+		WHY="$*"; one_line "reason" "$WHY"
+		ST=$(status_of "$ID")
+		case "$ST" in open|active) : ;; "") die 1 "'$ID' is not a row." ;; *) die 1 "'$ID' is $ST; only an open or active row can be blocked." ;; esac
+		set_row "$LIST" "$ID" "blocked: $WHY" "" ""
+		echo "commitments: '$ID' blocked: $WHY"
+		;;
+
+	done)
+		ID="${1:-}"; one_line "row id" "$ID"; shift
+		[ -n "$(status_of "$ID")" ] || die 1 "'$ID' is not a row."
+		set +e
+		sh "$SCRIPT_DIR/done-check" --task "$ID" "$@"
+		RC=$?
+		set -e
+		[ "$RC" -eq 0 ] || die 1 "NOT DONE (F26): done-check exited $RC; '$ID' stays as it was."
+		SHA=$(git rev-parse --short=12 HEAD)
+		set_row "$LIST" "$ID" done "$TODAY" "done-check exit 0 at $SHA"
+		echo "commitments: '$ID' done (done-check exit 0 at $SHA)."
+		;;
+
+	triage)
+		MID="${1:-}"; one_line "inbox id" "$MID"; shift || true
+		TO="$*"; one_line "triage" "$TO"
+		[ -n "$(rows "$INBOX" | awk -F '|' -v id="$MID" '$1 == id { print 1 }')" ] || die 1 "'$MID' is not in $INBOX."
+		case "$TO" in
+			row=*) [ -n "$(status_of "${TO#row=}")" ] || die 1 "'${TO#row=}' is not a row in $LIST; add the row first." ;;
+			declined:?*) : ;;
+			*) die 2 "triage is row=<id> or declined:<reason>." ;;
+		esac
+		set_row "$INBOX" "$MID" "$TO" "" ""
+		echo "commitments: $MID triaged: $TO"
+		;;
+
+	promise)
+		W=3; [ "${1:-}" = "--weeks" ] && W="${2:-3}"
+		case "$W" in ''|*[!0-9]*|0) die 2 "--weeks takes a positive whole number." ;; esac
+		set -- $(compute_promise "$W")
+		if [ "$1" = "-" ]; then echo "promise: none yet (no complete week of history)"; else echo "promise: $1 rows a week ($2 finished over the last $3 complete weeks)"; fi
+		;;
+
+	report)
+		DL=""; [ "${1:-}" = "--deadline" ] && DL="${2:-}"
+		[ -f "$LIST" ] || die 2 "no $LIST."
+		set -- $(compute_promise 3); P="$1"; PF="$2"; PW="$3"
+		printf 'COMMITMENTS REPORT %s (generated by scripts/commitments; no figure here is hand-written)\n' "$TODAY"
+		if [ "$P" = "-" ]; then echo "Promise this week: none yet (no complete week of history)"; else echo "Promise this week: $P rows (measured: $PF finished over the last $PW weeks)"; fi
+		rows "$LIST" | awk -F '|' -v today="$TODAY" -v p="$P" -v dl="$DL" -v pr="$P" "$DAYS_AWK"'
+			BEGIN { t = days(today); ws = t - (t + 3) % 7 }
+			{
+				n++; id[n] = $1; st[n] = $3; fin[n] = $4; stp[n] = $5
+				if ($3 == "done" && $5 == "") bad = bad " " $1
+				if ($3 == "done" && $5 != "" && days($4) >= ws) wk++
+			}
+			END {
+				printf "Finished this week: %d", wk + 0; if (p != "-") printf " of %d promised", p; printf "\n"
+				print "The list, in the owner'"'"'s order:"
+				k = 0
+				for (i = 1; i <= n; i++) {
+					s = st[i]; if (s == "done" && stp[i] == "") s = "NOT DONE (no done-check stamp)"
+					mark = ""
+					if (s != "done" && s !~ /^blocked/ && p != "-" && k < p) { mark = "  [in this week'"'"'s promise]"; k++ }
+					printf "  %d. %s  %s%s\n", i, id[i], s, mark
+				}
+				if (bad != "") print "Done rows with no stamp, counted NOT done:" bad
+				if (dl != "") {
+					if (p == "-" || p == 0) { print "Deadline " dl ": no measured rate yet, so no row can be shown to fit." }
+					else {
+						left = int((days(dl) - t + 6) / 7); room = left * p; fit = ""; miss = ""
+						for (i = 1; i <= n; i++) if ((st[i] != "done" || stp[i] == "") && st[i] !~ /^blocked/) { if (room > 0) { fit = fit " " id[i]; room-- } else miss = miss " " id[i] }
+						print "Deadline " dl ": " left " weeks at " p " a week."
+						print "  Fits:" (fit == "" ? " none" : fit)
+						print "  Does not fit:" (miss == "" ? " none" : miss)
+					}
+				}
+			}'
+		U=$(untriaged | tr '\n' ' ')
+		echo "Untriaged owner messages: ${U:-none}"
+		echo "Active rows: $(active_n) (cap $(cap))"
+		;;
+
+	*) die 2 "unknown command '$CMD' (try --help)." ;;
+esac
