@@ -6,8 +6,8 @@
 # ROADBLOCK REMOVED
 #   F25 (management): "An owner instruction never becomes a row, so no check sees it."
 #   On one real project 8 owner instructions were given and none was done in the
-#   time the owner set. This hook writes each manager-session prompt to
-#   .team/INBOX.md as `untriaged`; scripts/commitments dispatch refuses to start
+#   time the owner set. This hook writes each manager-session prompt to the
+#   private inbox as `untriaged`; scripts/commitments dispatch refuses to start
 #   producer work while any row is still untriaged (map it to a row, or decline it
 #   with a reason). The instruction can be judged wrongly, but it cannot vanish.
 #
@@ -18,9 +18,13 @@
 #   manager's dispatch; an unresolved session cannot dispatch anyway (dispatch-agent).
 #
 # WHAT IT STORES
-#   An excerpt: the first 120 characters, one line, pipes replaced. INBOX.md is a
-#   .team file and gets committed with the ledgers, so treat what the owner types to
-#   the manager as visible to anyone who can read the repo.
+#   An excerpt: the first 120 characters, one line, pipes replaced, in the PRIVATE
+#   inbox <git-common-dir>/rat/INBOX.md (enforcement/lib/owner-inbox-path.sh). Never
+#   in the work tree: git cannot track a path inside its own directory, so the
+#   owner's words can never be committed, pushed or shared (owner ruling 2026-11-18;
+#   1.3.0 wrote .team/INBOX.md, which a ledger commit could carry). A 1.3.0 file is
+#   moved out on the next prompt; one that git already tracks is left in place and
+#   reported, and scripts/commitments refuses to run until it is removed.
 #
 # NEVER BLOCKS
 #   It always exits 0. Refusing the owner's own prompt would be worse than a missed
@@ -67,7 +71,14 @@ case "$EXCERPT" in
 	"<cross-session-message"*|"<task-notification"*|"<agent-message"*|"<side-sessions-event"*|"<ci-monitor-event"*) STATUS=peer ;;
 esac
 
-INBOX="$TEAM_DIR/INBOX.md"
+. "${OWNER_INBOX_LIB:-$HERE/../lib/owner-inbox-path.sh}" || exit 0
+INBOX=$(owner_inbox_path) || exit 0
+owner_inbox_migrate "$TEAM_DIR" "$INBOX"
+case $? in
+	3) printf 'owner-inbox: %s\n' "$OWNER_INBOX_TRACKED_MSG" ;;
+	4) printf 'owner-inbox: an old %s/INBOX.md is still in the work tree beside the private inbox %s. Check it and delete it; owner messages must not stay in the work tree.\n' "$TEAM_DIR" "$INBOX" ;;
+esac
+mkdir -p "$(dirname "$INBOX")" || exit 0
 [ -f "$INBOX" ] || printf '| id | date | status | excerpt |\n|---|---|---|---|\n' > "$INBOX"
 N=$(awk -F '|' '{ c = $2; gsub(/[ \t]/, "", c); if (c ~ /^M[0-9]+$/) { v = substr(c, 2) + 0; if (v > m) m = v } } END { print m + 1 }' "$INBOX")
 printf '| M%s | %s | %s | %s |\n' "$N" "$(date +%Y-%m-%d)" "$STATUS" "$EXCERPT" >> "$INBOX"

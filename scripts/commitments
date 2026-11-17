@@ -21,7 +21,11 @@
 #                   finished and stamp are written by `commitments done`, never by hand.
 #                   The id should match the task id on the board (.team/TASKS.md), so
 #                   done-check can resolve it.
-#   INBOX.md        owner messages, appended by enforcement/hooks/owner-inbox.
+#   INBOX.md        owner messages, appended by enforcement/hooks/owner-inbox. PRIVATE:
+#                   kept at <git-common-dir>/rat/INBOX.md, never in .team or the work
+#                   tree, so it can never be committed or pushed. A 1.3.0 .team/INBOX.md
+#                   is moved there; one tracked by git stops every command (exit 2).
+#                   Nothing here prints a message's text, only ids and dates.
 #                     | id | date | status | excerpt |
 #                   status: untriaged | row=<id> | declined: <reason>
 #                   or peer: written by another session, a subagent or the app (the
@@ -67,7 +71,7 @@ set -eu
 
 PROG="$(basename "$0")"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-usage() { sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,67p' "$0" | sed 's/^# \{0,1\}//'; }
 die()  { code="$1"; shift; printf '%s: %s\n' "$PROG" "$*" >&2; exit "$code"; }
 
 if [ -z "${TEAM_DIR:-}" ]; then
@@ -78,7 +82,15 @@ if [ -z "${TEAM_DIR:-}" ]; then
 	TEAM_DIR="$MAIN_ROOT/.team"
 fi
 LIST="$TEAM_DIR/COMMITMENTS.md"
-INBOX="$TEAM_DIR/INBOX.md"
+# The owner's messages live in the git directory, never in the work tree (owner ruling
+# 2026-11-18). See enforcement/lib/owner-inbox-path.sh.
+. "${OWNER_INBOX_LIB:-$SCRIPT_DIR/../enforcement/lib/owner-inbox-path.sh}"
+INBOX=$(owner_inbox_path) || INBOX=""
+if [ -n "$INBOX" ]; then
+	set +e; owner_inbox_migrate "$TEAM_DIR" "$INBOX"; MRC=$?; set -e
+	[ "$MRC" -ne 3 ] || die 2 "$OWNER_INBOX_TRACKED_MSG"
+	[ "$MRC" -ne 4 ] || echo "commitments: an old $TEAM_DIR/INBOX.md is still in the work tree beside the private inbox $INBOX. Check it and delete it." >&2
+fi
 CAPFILE="$TEAM_DIR/wip-cap"
 LOCK="$TEAM_DIR/.commitments.lock"
 TODAY="${TEAM_TODAY:-$(date +%Y-%m-%d)}"
@@ -384,7 +396,7 @@ case "$CMD" in
 		echo "Untriaged owner messages: ${U:-none}"
 		echo "Peer messages, last 7 days (listed, never block):"
 		rows "$INBOX" | awk -F '|' -v today="$TODAY" "$DAYS_AWK"'
-			$3 == "peer" && $2 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ && days($2) > days(today) - 7 { printf "  %s %s  %s\n", $1, $2, substr($4, 1, 80); n++ }
+			$3 == "peer" && $2 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ && days($2) > days(today) - 7 { printf "  %s %s\n", $1, $2; n++ }
 			END { if (!n) print "  none" }'
 		echo "Active rows: $(active_n) (cap $(cap))"
 		;;

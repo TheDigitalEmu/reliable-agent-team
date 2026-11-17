@@ -60,7 +60,7 @@ owners already give.
 3. **Work-in-progress cap at dispatch.** `new-session` refuses dispatch while the open claimed
    rows are at the cap. It counts rows and claims, not agents, because the kit cannot see agents
    across sessions. The project sets the cap. Class: BLOCK.
-4. **Owner inbox.** A UserPromptSubmit hook appends each owner message to `.team/INBOX`.
+4. **Owner inbox.** A UserPromptSubmit hook appends each owner message to `.team/INBOX`. (Superseded in 1.3.1 by owner ruling: the inbox is private, kept in the git directory, never in the repository.)
    `new-session` refuses dispatch while any inbox item is untriaged (mapped to a row, or declined
    with a reason). An instruction can no longer vanish without becoming a row. Class: BLOCK.
 5. **Generated reports.** Progress is reported only as rows promised vs rows finished, generated
