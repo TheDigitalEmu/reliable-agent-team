@@ -883,6 +883,7 @@ if sh "$GATE_RANGE" --tip HEAD --base "$E7_BASE" >/dev/null 2>&1; then bad "E7 a
 # ---------------------------------------------------------------- MG (1.3.0 management checks)
 CM="$KIT_DIR/scripts/commitments"
 INBOX_HOOK="$HOOKS_SRC/owner-inbox"
+ibx() { printf '%s/rat/INBOX.md' "$(cd "$(git rev-parse --git-common-dir)" && pwd)"; }  # the private inbox
 mg_list() {  # mg_list <row lines...>: write the owner's list, header first
 	{ printf '| id | commitment | status | finished | stamp |\n|---|---|---|---|---|\n'
 	  for r in "$@"; do printf '%s\n' "$r"; done; } > .team/COMMITMENTS.md
@@ -906,17 +907,17 @@ if sh "$CM" dispatch C >/dev/null 2>&1 && [ "$(mg_st B)" = "blocked: waiting on 
 # MG4: owner-inbox logs manager prompts only, and dispatch refuses until triaged.
 mg_list '| A | first | open | | |'
 printf '{"prompt":"fix the | login first"}' | TEAM_ROLE=developer sh "$INBOX_HOOK" >/dev/null 2>&1
-if [ ! -f .team/INBOX.md ]; then ok "MG4 a developer prompt is not logged"; else bad "MG4 a developer prompt was logged"; fi
+if [ ! -f "$(ibx)" ]; then ok "MG4 a developer prompt is not logged"; else bad "MG4 a developer prompt was logged"; fi
 printf '{"prompt":"fix the | login first"}' | TEAM_ROLE=manager sh "$INBOX_HOOK" >/dev/null 2>&1
-if grep -q '| M1 | .* | untriaged | fix the / login first |' .team/INBOX.md 2>/dev/null; then ok "MG4 a manager prompt is logged untriaged, pipe neutralised"; else bad "MG4 manager prompt not logged as expected"; fi
+if grep -q '| M1 | .* | untriaged | fix the / login first |' "$(ibx)" 2>/dev/null; then ok "MG4 a manager prompt is logged untriaged, pipe neutralised"; else bad "MG4 manager prompt not logged as expected"; fi
 if sh "$CM" dispatch A >/dev/null 2>&1; then bad "MG4 dispatch passed with an untriaged owner message"; else ok "MG4 an untriaged owner message refuses dispatch"; fi
 if sh "$CM" triage M1 row=Z >/dev/null 2>&1; then bad "MG4 triage to a row that does not exist was accepted"; else ok "MG4 triage to a missing row is refused"; fi
 sh "$CM" triage M1 row=A >/dev/null 2>&1
 if sh "$CM" dispatch A >/dev/null 2>&1; then ok "MG4 after triage the dispatch passes"; else bad "MG4 dispatch still refused after triage"; fi
 # MG5: with no COMMITMENTS.md the hook is a no-op.
-rm -f .team/COMMITMENTS.md .team/INBOX.md
+rm -f .team/COMMITMENTS.md "$(ibx)"
 printf '{"prompt":"hello"}' | TEAM_ROLE=manager sh "$INBOX_HOOK" >/dev/null 2>&1
-if [ ! -f .team/INBOX.md ]; then ok "MG5 checks off without COMMITMENTS.md (hook no-op)"; else bad "MG5 hook wrote an inbox with the checks off"; fi
+if [ ! -f "$(ibx)" ]; then ok "MG5 checks off without COMMITMENTS.md (hook no-op)"; else bad "MG5 hook wrote an inbox with the checks off"; fi
 # MG6: done only on done-check exit 0, and the stamp is the script's.
 mg_list '| A | first | active | | |' '| H | hand-marked | done | 2026-11-10 | |' '| O | open row | open | | |'
 echo work > work.txt; git_quiet add -A; git_quiet commit -m "work for A"; A_SHA=$(git rev-parse HEAD)
@@ -993,7 +994,7 @@ mg_list '| A | first | open | | |' '| B | second | open | | |'
 [ "$(da manager '{"tool_name":"Agent","tool_input":{"prompt":"no row"}}')" = 2 ] && ok "BP1 space in the repo path: a no-Row Agent call is still denied" || bad "BP1 space in path turned the Agent check off"
 if sh "$CM" dispatch B >/dev/null 2>&1; then bad "BP1 space in path: a non-top row was dispatched"; else ok "BP1 space in path: dispatch still refuses a non-top row"; fi
 printf '{"prompt":"space path message"}' | TEAM_ROLE=manager sh "$INBOX_HOOK" >/dev/null 2>&1
-grep -q 'space path message' .team/INBOX.md 2>/dev/null && ok "BP1 space in path: the inbox still logs" || bad "BP1 space in path: the inbox wrote nothing"
+grep -q 'space path message' "$(ibx)" 2>/dev/null && ok "BP1 space in path: the inbox still logs" || bad "BP1 space in path: the inbox wrote nothing"
 # BP2: an unresolved role fails closed; whoami is read from the repo top, not the cwd.
 setup_repo bp2
 echo seed > seed.txt; git_quiet add seed.txt; git_quiet commit -m seed
@@ -1013,7 +1014,7 @@ setup_repo bp3
 mg_list '| A | first | open | | |'
 ROWS_BEFORE=$(grep -c '^|' .team/COMMITMENTS.md)
 if sh "$CM" block A 'x\n\174 Z \174 forged \174 done \174 2026-11-16 \174 done-check exit 0 at 1 \174' >/dev/null 2>&1; then bad "BP3 a backslash reason was accepted by block"; else ok "BP3 block refuses a reason with a backslash"; fi
-printf '| id | date | status | excerpt |\n|---|---|---|---|\n| M1 | 2026-11-16 | untriaged | x |\n' > .team/INBOX.md
+mkdir -p "$(dirname "$(ibx)")"; printf '| id | date | status | excerpt |\n|---|---|---|---|\n| M1 | 2026-11-16 | untriaged | x |\n' > "$(ibx)"
 if sh "$CM" triage M1 'declined:a\n\174 Z' >/dev/null 2>&1; then bad "BP3 a backslash triage was accepted"; else ok "BP3 triage refuses a backslash"; fi
 sh "$CM" block A 'plain reason, with: punctuation' >/dev/null 2>&1
 [ "$(grep -c '^|' .team/COMMITMENTS.md)" = "$ROWS_BEFORE" ] && [ "$(mg_st A)" = "blocked: plain reason, with: punctuation" ] && ok "BP3 a plain reason is written as text and adds no row" || bad "BP3 a reason changed the row count or text"
@@ -1059,9 +1060,9 @@ T0=$(date +%s); set +e; sh "$CM" block B old lock test >/dev/null 2>&1; RC=$?; s
 [ "$RC" -eq 0 ] && [ $((T1 - T0)) -lt 4 ] && ok "RT1 an old lock is reclaimed at once ($((T1 - T0))s)" || bad "RT1 old lock: rc=$RC after $((T1 - T0))s"
 [ ! -e .team/.commitments.lock ] && ok "RT1 the lock is gone after the change" || bad "RT1 lock left behind"
 # RT2: the inbox logs a manager only; an unresolved session's prompt is not logged.
-rm -f .team/INBOX.md
+rm -f "$(ibx)"
 printf '{"prompt":"finance chat"}' | sh "$INBOX_HOOK" >/dev/null 2>&1
-[ ! -f .team/INBOX.md ] && ok "RT2 a prompt from a session with no role is not logged" || bad "RT2 an unresolved session was logged"
+[ ! -f "$(ibx)" ] && ok "RT2 a prompt from a session with no role is not logged" || bad "RT2 an unresolved session was logged"
 # RT3: done accepts a branch with a slash (it fails later on proof, not on the name).
 DONE_OUT=$(sh "$CM" done A --branch feature/a 2>&1 || true)
 printf '%s' "$DONE_OUT" | grep -q 'not a valid branch name' && bad "RT3 feature/a refused as a branch name" || ok "RT3 done accepts a branch name with a slash"
@@ -1102,6 +1103,77 @@ export RESOLVE_ROLE="$WORK/crash-role"; FC2=$(da '' '{"tool_name":"Agent","tool_
 export RESOLVE_ROLE="$WORK/no-such-file"; FC3=$(da '' '{"tool_name":"Agent","tool_input":{"prompt":"Row: A"}}'); unset RESOLVE_ROLE
 [ "$FC3" = 2 ] && ok "FC3 a missing role resolver gives exit 2" || bad "FC3 missing resolver gave exit $FC3"
 grep -q '"onFailure": "block"' "$KIT_DIR/hooks/hooks.json" && ok "FC4 the dispatch-agent plugin entry sets onFailure block" || bad "FC4 onFailure block missing from hooks.json"
+
+# ---------------------------------------------------------------- LU (1.3.1 fixes from live use)
+. "$KIT_DIR/enforcement/lib/board-cells.sh"
+# LU1: a cell of key=value pairs splits; a prose cell that mentions a key stays whole.
+LU1=$(printf '| T | class=static status=done artifact=no | note on sha=abc1234 here |\n' | board_cells)
+printf '%s\n' "$LU1" | grep -qx 'class=static' && printf '%s\n' "$LU1" | grep -qx 'status=done' \
+	&& ok "LU1 space-separated key=value pairs in one cell read as separate fields" || bad "LU1 pairs in one cell were not split"
+printf '%s\n' "$LU1" | grep -q '^sha=' && bad "LU1 a prose cell set sha=" || ok "LU1 a prose cell that mentions sha= sets no field"
+# LU2: done-check picks the row whose first cell IS the id, and gates every shas= commit.
+setup_repo lu
+echo one > one.txt; git_quiet add one.txt; git_quiet commit -m "work 1"; LU_A=$(git rev-parse HEAD)
+echo two > two.txt; git_quiet add two.txt; git_quiet commit -m "work 2"; LU_B=$(git rev-parse HEAD)
+echo three > three.txt; git_quiet add three.txt; git_quiet commit -m "work 3, never gated"; LU_C=$(git rev-parse HEAD)
+seed_gate "$LU_A" static reviewer PASS reviewer; seed_gate "$LU_B" static reviewer PASS reviewer
+{ printf '| T5-earlier | class=presentational status=todo artifact=no | author=me | next: T5 (screens) |\n'
+  printf '| T5 | class=static status=in-progress artifact=no | author=me | shas=%s,%s |\n' "$(printf '%.7s' "$LU_A")" "$(printf '%.7s' "$LU_B")"
+  printf '| T6 | class=static status=todo artifact=no | author=me | shas=%s,%s |\n' "$LU_A" "$LU_C"
+  printf '| T7 | class=static status=todo artifact=no | author=me | no sha named |\n'
+  printf '| T8 | class=static status=todo artifact=no | author=me | shas=%s,-x |\n' "$LU_A"
+} > .team/TASKS.md
+commit_ledger
+git push -q --no-verify origin HEAD:refs/heads/main >/dev/null 2>&1
+lu_done() { sh "$DONE_CHECK" --task "$1" --branch main 2>&1; }
+LU2=$(lu_done T5) && LU2_RC=0 || LU2_RC=$?
+[ "$LU2_RC" = 0 ] && ok "LU2 the exact row is read (not the earlier row whose prose names it) and two gated commits pass" || { bad "LU2 exact row with shas= did not pass (exit $LU2_RC)"; printf '%s\n' "$LU2" | sed 's/^/        /'; }
+printf '%s\n' "$LU2" | grep -c '^  OK    GATES' | grep -qx 2 && ok "LU2 each commit in shas= is gated on its own" || bad "LU2 not every shas= commit was gated"
+# LU3: one commit in the list without gates fails the whole row.
+lu_done T6 >/dev/null && bad "LU3 a row passed with an ungated commit in shas=" || ok "LU3 one ungated commit in shas= makes the row NOT DONE"
+# LU4: no sha named means HEAD (a ledger commit) is checked, and the output says how to fix it.
+LU4=$(lu_done T7) && bad "LU4 a row with no sha passed on a ledger commit" || { printf '%s\n' "$LU4" | grep -q 'names no sha= or shas=' && ok "LU4 no sha named: NOT DONE, with the shas= hint" || bad "LU4 no hint printed"; }
+# LU5: a list entry that is not a commit, or starts with "-", is refused.
+LU5=$(lu_done T8) && bad "LU5 a row with a bad shas= entry passed" || { printf '%s\n' "$LU5" | grep -q 'sha -x is not a commit' && ok "LU5 a shas= entry starting with - is refused" || bad "LU5 bad entry not named"; }
+# LU6: a prompt opening with a harness envelope is logged as peer, never blocks, and is reported.
+mg_list '| A | first | open | | |'
+printf '{"prompt":"<cross-session-message from=\\"x\\">ship it</cross-session-message>"}' | TEAM_ROLE=manager sh "$INBOX_HOOK" >/dev/null 2>&1
+printf '{"prompt":"<task-notification> <task-id>a1</task-id>"}' | TEAM_ROLE=manager sh "$INBOX_HOOK" >/dev/null 2>&1
+[ "$(grep -c '| peer |' "$(ibx)" 2>/dev/null)" = 2 ] && ok "LU6 peer and task envelopes are logged as peer" || bad "LU6 envelopes not logged as peer"
+sh "$CM" dispatch A >/dev/null 2>&1 && ok "LU6 peer items do not block dispatch" || bad "LU6 a peer item blocked dispatch"
+sh "$CM" report 2>/dev/null | grep -q '^  M1 ' && ok "LU6 the report lists peer items" || bad "LU6 the report does not list peer items"
+printf '{"prompt":"please do the screens next"}' | TEAM_ROLE=manager sh "$INBOX_HOOK" >/dev/null 2>&1
+grep -q '| M3 | .* | untriaged |' "$(ibx)" && ok "LU6 an owner prompt is still untriaged" || bad "LU6 an owner prompt was not untriaged"
+
+# ---------------------------------------------------------------- PV (owner privacy: messages never enter git)
+# Owner ruling 2026-11-18: the owner's messages are never recorded in a shared repository.
+setup_repo pv
+echo seed > seed.txt; git_quiet add seed.txt; git_quiet commit -m seed
+mg_list '| A | first | open | | |'
+commit_ledger
+PV_BEFORE=$(git status --porcelain --ignored)
+printf '{"prompt":"pv private words seven"}' | TEAM_ROLE=manager sh "$INBOX_HOOK" >/dev/null 2>&1
+grep -q 'pv private words seven' "$(ibx)" 2>/dev/null && ok "PV1 the owner's message is logged in the private inbox" || bad "PV1 the message was not logged"
+[ "$(git status --porcelain --ignored)" = "$PV_BEFORE" ] && ok "PV1 logging a message changes nothing in the work tree (not even an ignored file)" || bad "PV1 logging a message touched the work tree"
+grep -rl --exclude-dir=.git 'pv private words seven' . >/dev/null 2>&1 && bad "PV1 the message text is in the work tree" || ok "PV1 the message text is nowhere in the work tree"
+git add -A >/dev/null 2>&1; git add -f "$(ibx)" >/dev/null 2>&1 || true
+git ls-files | grep -qi 'inbox' && bad "PV2 git tracked the inbox" || ok "PV2 git cannot track the inbox, even with add -A and add -f"
+git reset -q >/dev/null 2>&1 || true
+PV_REP=$(sh "$CM" report 2>&1 || true)
+printf '%s' "$PV_REP" | grep -q 'M1' && ! printf '%s' "$PV_REP" | grep -q 'private words' && ok "PV3 the report names the message by id only, never its text" || bad "PV3 the report printed message text (or no id)"
+# PV4: a 1.3.0 inbox left in .team (untracked) is moved out on the next command, triage state kept.
+rm -f "$(ibx)"; printf '| id | date | status | excerpt |\n|---|---|---|---|\n| M1 | 2026-11-16 | declined:old | old words |\n' > .team/INBOX.md
+sh "$CM" report >/dev/null 2>&1 || true
+[ ! -e .team/INBOX.md ] && grep -q 'declined:old' "$(ibx)" 2>/dev/null && ok "PV4 a 1.3.0 .team/INBOX.md is moved out of the work tree with its rows" || bad "PV4 the old inbox was not moved"
+# PV5: a 1.3.0 inbox that git already tracks stops commitments and is reported by the hook.
+printf '| id | date | status | excerpt |\n|---|---|---|---|\n' > .team/INBOX.md; git_quiet add -f .team/INBOX.md
+set +e; PV5=$(sh "$CM" dispatch A 2>&1); PV5_RC=$?; set -e
+[ "$PV5_RC" = 2 ] && printf '%s' "$PV5" | grep -q 'PRIVACY' && ok "PV5 a tracked .team/INBOX.md stops commitments (exit 2, PRIVACY)" || bad "PV5 a tracked inbox did not stop commitments (exit $PV5_RC)"
+printf '{"prompt":"after tracked"}' | TEAM_ROLE=manager sh "$INBOX_HOOK" 2>&1 | grep -q 'PRIVACY' && ok "PV5 the hook reports a tracked inbox" || bad "PV5 the hook said nothing about a tracked inbox"
+grep -q 'after tracked' .team/INBOX.md && bad "PV5 a new message went into the tracked file" || ok "PV5 a new message never goes into the tracked file"
+git_quiet rm -q --cached .team/INBOX.md
+# PV6: the rulebook forbids copying owner messages anywhere shared.
+grep -q 'Never copy an owner message into the repository' "$KIT_DIR/templates/rulebook.md" && ok "PV6 the rulebook forbids copying owner messages anywhere shared" || bad "PV6 rulebook rule missing"
 
 # ---------------------------------------------------------------- verdict
 printf '\nintegration-test: %d passed, %d failed\n' "$PASS_N" "$FAIL_N"

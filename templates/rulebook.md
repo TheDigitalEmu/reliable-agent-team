@@ -138,7 +138,8 @@ Every hand-off carries a `change_class` field. It decides the gate set:
 - Report progress only with `scripts/commitments report`. Never hand-write a promise, a percentage
   or a "done": the promise is computed, and done is `scripts/commitments done` after done-check
   exits 0.
-- Triage every owner message in `.team/INBOX.md` (a row, or declined with a reason) before the next
-  dispatch.
+- Triage every owner message in the private inbox (`.git/rat/INBOX.md`; a row, or declined with a reason) before the next
+  dispatch. Never copy an owner message into the repository, a commit, a ledger, a hand-over or
+  any other shared place: the owner's words stay in the private inbox and in the chat.
 - Never edit your own rules. A process change found in a retrospective goes to the kit maintainer
   as a proposal.

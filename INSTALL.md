@@ -77,7 +77,8 @@ commit it with the ledger. Absent, only `.team`-only and tree-identical commits 
 ## Step 2c (optional, 1.3.0): Turn on the management checks
 Copy `templates/COMMITMENTS.md` to `.team/COMMITMENTS.md` and put the owner's ordered list in it
 (optionally `templates/wip-cap` to `.team/wip-cap`). From then on producer sessions need
-`new-session --row <id>`, owner messages to the manager are logged to `.team/INBOX.md`, and
+`new-session --row <id>`, owner messages to the manager are logged to a private inbox in the git directory
+(`.git/rat/INBOX.md`, never committed or pushed; a 1.3.0 `.team/INBOX.md` is moved there), and
 progress comes from `scripts/commitments report`. What each check does: `templates/method.md`.
 
 In Claude Code the manager starts workers with the Agent tool, not `new-session`, so the plugin

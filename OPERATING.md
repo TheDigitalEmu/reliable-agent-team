@@ -109,7 +109,7 @@ when every changed path is exempt and none is kept or never; mixed commits are g
 
 With `.team/COMMITMENTS.md` present (1.3.0), start producer work with
 `new-session --role developer --row <top open row> ...`, mark a stuck row with
-`scripts/commitments block <id> <reason>`, triage `.team/INBOX.md` with
+`scripts/commitments block <id> <reason>`, triage the private inbox (`.git/rat/INBOX.md`) with
 `scripts/commitments triage`, close a row with `scripts/commitments done <id>`, and report only
 with `scripts/commitments report`. See `templates/method.md`.
 
